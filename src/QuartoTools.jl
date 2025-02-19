@@ -19,6 +19,18 @@ export @nc_cmd
 export deserialize
 export serialize
 
+# Compat
+
+if VERSION < v"1.7" && !isdefined(Base, :Returns)
+    _stable_typeof(x) = typeof(x)
+    _stable_typeof(::Type{T}) where {T} = @isdefined(T) ? Type{T} : DataType
+    struct Returns{V} <: Function
+        value::V
+        Returns{V}(value) where {V} = new{V}(value)
+        Returns(value) = new{_stable_typeof(value)}(value)
+    end
+    (obj::Returns)(@nospecialize(args...); @nospecialize(kw...)) = obj.value
+end
 
 # Serialization implementation.
 
