@@ -1,0 +1,27 @@
+---
+julia: 
+    exeflags: ["--project=environments/QuartoToolsEnv"]
+---
+
+```{julia}
+using QuartoTools: Cell, Div, Tabset, Expand, MarkdownCell
+```
+
+```{julia}
+Cell(123; code = "fake code", options = Dict("some_option" => true))
+```
+
+```{julia}
+Div([Cell(123)]; id = "someid", class=["classA", "classB"], attributes = Dict("somekey" => "somevalue"))
+```
+
+```{julia}
+Tabset([
+    "Tab1" => Cell(123),
+    "Tab2" => MarkdownCell("hello"),
+])
+```
+
+```{julia}
+Expand([MarkdownCell("one"), MarkdownCell("two")])
+```

@@ -1,0 +1,77 @@
+---
+title: (De)serialization of Julia objects
+engine: julia
+julia:
+    exeflags:
+      - --project=environments/Serialize
+---
+
+```{julia}
+import CairoMakie
+import DataFrames
+import QuartoTools
+```
+
+```{julia}
+mktempdir() do dir
+    script = joinpath(dir, "script.jl")
+    write(
+        script,
+        """
+        import CairoMakie
+        import DataFrames
+        import Serialization
+
+        func = x -> x
+        df = DataFrames.DataFrame(a=[1, 2, 3], b=[4, 5, 6])
+        fig = CairoMakie.scatter(df.a, func.(df.b))
+
+        Serialization.serialize("from_script.jls", (func, df, fig))
+        """,
+    )
+    run(`$(Base.julia_cmd()) --project=environments/Serialize $script`)
+end
+```
+
+```{julia}
+func, df, fig = QuartoTools.deserialize("from_script.jls")
+```
+
+```{julia}
+func(1)
+```
+
+```{julia}
+df
+```
+
+```{julia}
+fig
+```
+
+```{julia}
+QuartoTools.serialize("from_quarto.jls", (func, df, fig))
+```
+
+```{julia}
+mktempdir() do dir
+    script = joinpath(dir, "script.jl")
+    write(
+        script,
+        """
+        import Serialization
+        import DataFrames
+        import CairoMakie
+
+        func, df, fig = Serialization.deserialize("from_quarto.jls")
+
+        is_func = isa(func, Function) && func(1) == 1
+        is_df = isa(df, DataFrames.DataFrame) && DataFrames.nrow(df) == 3
+        is_fig = isa(fig, CairoMakie.Makie.FigureAxisPlot)
+
+        @show is_func is_df is_fig
+        """,
+    )
+    run(`$(Base.julia_cmd()) --project=environments/Serialize $script`)
+end
+```

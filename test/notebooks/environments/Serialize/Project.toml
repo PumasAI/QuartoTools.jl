@@ -1,0 +1,5 @@
+[deps]
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+QuartoTools = "5fded309-f5a0-485a-9129-b3749510da85"
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"

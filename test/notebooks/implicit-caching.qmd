@@ -1,0 +1,34 @@
+---
+title: Implicit caching
+julia:
+    exeflags: ["--project=../.."]
+    cache:
+        enabled: true
+---
+
+```{julia}
+using QuartoTools
+```
+
+```{julia}
+a = rand(3)
+```
+
+```{julia}
+#| julia:
+#|     cache:
+#|         enabled: false
+b = rand(3)
+```
+
+```{julia}
+c = rand(3)
+```
+
+```{julia}
+#| julia:
+#|     cache:
+#|         ignored:
+#|           - d
+d = rand(3)
+```

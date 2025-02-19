@@ -1,0 +1,7 @@
+.vscode
+Manifest.toml
+LocalPreferences.toml
+.DS_Store
+*.jls
+*.ipynb
+.cache

@@ -1,0 +1,86 @@
+name: CI
+on:
+  merge_group:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "*"
+
+concurrency:
+  # Skip intermediate builds: all builds except for builds on the `master` branch
+  # Cancel intermediate builds: only pull request builds
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref != 'refs/heads/main' || github.run_number }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+permissions:
+  contents: read
+
+jobs:
+  finalize:
+    timeout-minutes: 10
+    needs: [format, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo format: ${{ needs.format.result }}
+          echo test: ${{ needs.test.result }}
+      - run: exit 1
+        if: |
+          (needs.format.result != 'success') ||
+          (needs.test.result != 'success')
+
+  format:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: julia-actions/setup-julia@5c9647d97b78a5debe5164e9eec09d653d29bd71 # v2.6.1
+        with:
+          version: 1
+
+      - run: julia --project=.format -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+      - run: julia --project=.format -e 'using JuliaFormatter; format("."; verbose = true)'
+      - run: git diff --exit-code --color
+
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macOS-latest
+        version:
+          - "1.9"
+          - "1.10"
+          - "1.11"
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: julia-actions/setup-julia@5c9647d97b78a5debe5164e9eec09d653d29bd71 # v2.6.1
+        with:
+          version: ${{ matrix.version }}
+
+      - uses: julia-actions/julia-buildpkg@e3eb439fad4f9aba7da2667e7510e4a46ebc46e1 # v1.7.0
+
+      - uses: julia-actions/julia-runtest@678da69444cd5f13d7e674a90cb4f534639a14f9 # v1.11.2
+
+      - uses: julia-actions/julia-processcoverage@03114f09f119417c3242a9fb6e0b722676aedf38 # v1.2.2
+
+      - uses: codecov/codecov-action@13ce06bfc6bbe3ecf90edbbf1bc32fe5978ca1d3 # v5.3.1
+        with:
+          verbose: true
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
