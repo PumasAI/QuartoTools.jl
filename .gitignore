@@ -5,3 +5,4 @@ LocalPreferences.toml
 *.jls
 *.ipynb
 .cache
+docs/build
