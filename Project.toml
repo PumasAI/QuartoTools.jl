@@ -1,7 +1,7 @@
 name = "QuartoTools"
 uuid = "5fded309-f5a0-485a-9129-b3749510da85"
 authors = ["Michael Hatherly <michael@pumas.ai>", "Julius Krumbiegel <juliusk@pumas.ai>"]
-version = "0.3.2"
+version = "1.0.0"
 
 [deps]
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
