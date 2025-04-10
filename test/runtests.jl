@@ -32,4 +32,5 @@ using Test
     include("testsets/caching.jl")
     include("testsets/implicit-caching.jl")
     include("testsets/expandables.jl")
+    include("testsets/reading-time.jl")
 end
