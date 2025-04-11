@@ -18,6 +18,7 @@ export @cache
 export @nc_cmd
 export deserialize
 export serialize
+export reading_time
 
 # Compat
 
@@ -602,6 +603,78 @@ end
 
 include("expandables.jl")
 
+"""
+    reading_time(;
+        words_per_minute::Integer=238,
+        progress_bar::Bool=true,
+        progress_bar_color::String="#0066cc",
+        reading_time_template::Function
+    )
+
+Add an estimated reading time to the top of the rendered HTML Quarto document.
+
+When `progress_bar` is `true` then also add a thin progress bar to the top edge
+of the document that shows the current scroll position. `progress_bar_color`
+can be used to customize the color of the progress bar.
+
+`reading_time_template` is a function that lets you customize the HTML that is
+generated for the reading time message. It takes a single argument `minutes`
+which is the JavaScript interpolation variable that will be replaced with the
+actual minutes in the browser. It is not the actual number of minutes.
+
+This function has no effect when used in non-HTML output formats.
+"""
+function reading_time(;
+    words_per_minute::Integer = 238,
+    progress_bar::Bool = true,
+    progress_bar_color::String = "#0066cc",
+    reading_time_template = minutes -> "<span>$minutes minute reading time.</span>",
+)
+    template = reading_time_template("\${readingTimeMinutes}")
+    return HTML(
+        """
+        <script>
+        document.addEventListener('DOMContentLoaded', function() {
+          const content = document.querySelector('article') || document.querySelector('main') || document.body;
+          const text = content.textContent || content.innerText;
+          const wordCount = text.split(/\\s+/).filter(word => word.length > 0).length;
+          const readingTimeMinutes = Math.ceil(wordCount / $words_per_minute);
+
+          const readingTimeElement = document.createElement('div');
+          readingTimeElement.className = 'reading-time';
+          readingTimeElement.innerHTML = `$template`;
+          readingTimeElement.style.padding = '10px';
+          readingTimeElement.style.margin = '10px 0';
+          readingTimeElement.style.fontSize = '0.9rem';
+          readingTimeElement.style.color = '#555';
+          readingTimeElement.style.fontStyle = 'italic';
+          content.insertBefore(readingTimeElement, content.firstChild);
+
+          if ($progress_bar) {
+            const progressBar = document.createElement('div');
+            progressBar.className = 'reading-progress-bar';
+            progressBar.style.position = 'fixed';
+            progressBar.style.top = '0';
+            progressBar.style.left = '0';
+            progressBar.style.width = '0%';
+            progressBar.style.height = '4px';
+            progressBar.style.backgroundColor = $(repr(progress_bar_color));
+            progressBar.style.zIndex = '9999';
+            progressBar.style.transition = 'width 0.1s';
+            document.body.appendChild(progressBar);
+
+            window.addEventListener('scroll', function() {
+              const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+              const scrollHeight = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+              const scrollPercentage = (scrollTop / scrollHeight) * 100;
+              progressBar.style.width = scrollPercentage + '%';
+            });
+          }
+        });
+        </script>
+        """,
+    )
+end
 
 function __init__()
     if ccall(:jl_generating_output, Cint, ()) == 0
