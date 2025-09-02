@@ -8,3 +8,4 @@ updates:
     labels:
       - "dependencies"
       - "github-actions"
+      - "skip-changelog"
