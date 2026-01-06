@@ -9,3 +9,7 @@ updates:
       - "dependencies"
       - "github-actions"
       - "skip-changelog"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
