@@ -68,8 +68,6 @@ jobs:
           - os: windows-latest # Slow registry download.
             version: "1.6"
         include:
-          - os: macos-13 # Intel
-            version: '1.6'
           - os: windows-latest
             version: "1.7"
 
