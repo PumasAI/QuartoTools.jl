@@ -723,8 +723,16 @@ function __init__()
 
         function QuartoTools._caching_options(::Nothing)
             ns = QuartoNotebookWorker.NotebookState
-            nb_options = isdefined(ns, :OPTIONS) ? ns.OPTIONS[] : Dict()
-            cell_options = isdefined(ns, :CELL_OPTIONS) ? ns.CELL_OPTIONS[] : Dict()
+            # Task-local context API (multi-notebook workers) with
+            # fallback to global Refs (single-notebook workers).
+            if isdefined(ns, :current_context)
+                ctx = ns.current_context()
+                nb_options = ctx === nothing ? Dict() : ctx.options
+                cell_options = ns.current_cell_options()
+            else
+                nb_options = isdefined(ns, :OPTIONS) ? ns.OPTIONS[] : Dict()
+                cell_options = isdefined(ns, :CELL_OPTIONS) ? ns.CELL_OPTIONS[] : Dict()
+            end
             QuartoTools.__caching_options(nb_options, cell_options)
         end
     end
