@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v1.1.1] - 2026-03-16
+
 ### Changed
 
 - Support task-local context API for caching options in multi-notebook workers [#25]
@@ -27,5 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [v1.0.0]: https://github.com/PumasAI/QuartoTools.jl/releases/tag/v1.0.0
 [v1.1.0]: https://github.com/PumasAI/QuartoTools.jl/releases/tag/v1.1.0
+[v1.1.1]: https://github.com/PumasAI/QuartoTools.jl/releases/tag/v1.1.1
 [#7]: https://github.com/PumasAI/QuartoTools.jl/issues/7
 [#25]: https://github.com/PumasAI/QuartoTools.jl/issues/25
