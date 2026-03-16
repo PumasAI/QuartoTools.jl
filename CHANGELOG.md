@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- Support new QNR anonymous notebook module in `deserialize_module` [#26]
+
 ## [v1.1.1] - 2026-03-16
 
 ### Changed
@@ -32,3 +36,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [v1.1.1]: https://github.com/PumasAI/QuartoTools.jl/releases/tag/v1.1.1
 [#7]: https://github.com/PumasAI/QuartoTools.jl/issues/7
 [#25]: https://github.com/PumasAI/QuartoTools.jl/issues/25
+[#26]: https://github.com/PumasAI/QuartoTools.jl/issues/26
