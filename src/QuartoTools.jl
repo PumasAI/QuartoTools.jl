@@ -90,7 +90,12 @@ serialize(filename::AbstractString, x) = open(io -> serialize(io, x), filename, 
 
 function Serialization.deserialize_module(q::QuartoSerializer)
     real_module = Serialization.deserialize_module(q.__serializer__)
-    return real_module === Main ? Main.Notebook : real_module
+    if real_module === Main
+        mod = _notebook_module()
+        mod !== nothing && return mod
+        isdefined(Main, :Notebook) && isa(Main.Notebook, Module) && return Main.Notebook
+    end
+    return real_module
 end
 
 """
@@ -576,6 +581,8 @@ struct IsQuartoNotebook end
 # Extended in the package extension to return `true` when `QuartoNotebookWorker`
 # is loaded.
 _is_quarto_notebook(::Any) = false
+_notebook_module(::Any) = nothing
+_notebook_module() = _notebook_module(nothing)
 
 # Handle both versions of the `QuartoNotebookWorker`.
 function is_quarto_notebook()
@@ -688,6 +695,14 @@ function __init__()
         # within a system image where source has been stripped.
 
         QuartoTools._is_quarto_notebook(::QuartoTools.IsQuartoNotebook) = true
+
+        function QuartoTools._notebook_module(::Nothing)
+            ns = QuartoNotebookWorker.NotebookState
+            if isdefined(ns, :notebook_module)
+                return ns.notebook_module()
+            end
+            return nothing
+        end
 
         # Convert the `QuartoToos.Cell` to the equivalent `QuartoNotebookWorker.Cell`.
         _cell(c::QuartoTools.Cell) =
