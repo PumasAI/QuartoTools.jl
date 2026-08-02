@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- `attach!` serves the QuartoNotebookRunner worker protocol from the REPL, so `quarto render` evaluates notebooks in the live session, keeping packages loaded and compiled code warm across renders. It loads only the worker package, found from an existing Quarto install, so `QuartoNotebookRunner` stays out of the notebook's project [#31]
+
 ## [v1.1.2] - 2026-03-17
 
 ### Fixed
@@ -40,3 +44,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#7]: https://github.com/PumasAI/QuartoTools.jl/issues/7
 [#25]: https://github.com/PumasAI/QuartoTools.jl/issues/25
 [#26]: https://github.com/PumasAI/QuartoTools.jl/issues/26
+[#31]: https://github.com/PumasAI/QuartoTools.jl/issues/31

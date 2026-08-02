@@ -16,6 +16,7 @@ import TOML
 
 export @cache
 export @nc_cmd
+export attach!
 export deserialize
 export serialize
 export reading_time
@@ -750,6 +751,129 @@ function __init__()
             end
             QuartoTools.__caching_options(nb_options, cell_options)
         end
+    end
+end
+
+
+# REPL attach entrypoint.
+
+const _QNR_UUID = Base.UUID("4c0109c6-14e9-4c88-93f0-2b974d3468f4")
+const _WORKER_UUID = Base.UUID("38328d9c-a911-4051-bc06-3f7f556ffeda")
+
+"""
+    attach!(; root, runner)
+
+Serve the QuartoNotebookRunner worker protocol from this Julia session so
+`quarto render` evaluates notebooks here instead of in a spawned worker process,
+keeping packages loaded and compiled code warm across renders. Any notebook under
+`root` attaches automatically, and the session prints `attached render: <path>`
+for each render it absorbs.
+
+Only the worker package is loaded, found on disk from an existing Quarto/runner
+install, so `QuartoNotebookRunner` never enters the active project. `root` defaults
+to the enclosing git repository of the current directory, else the current
+directory. `runner` overrides discovery with an explicit `QuartoNotebookRunner`
+package directory.
+
+```julia
+using QuartoTools
+QuartoTools.attach!()
+```
+
+Set `QUARTONOTEBOOKRUNNER_NO_ATTACH=1` on the `quarto render` invocation to force a
+spawned worker instead. Returns the server; close it with `close(server)`.
+"""
+function attach!(; root = nothing, runner = nothing)
+    worker_src = _worker_source(runner)
+    worker_src in LOAD_PATH || push!(LOAD_PATH, worker_src)
+    worker = Base.require(Base.PkgId(_WORKER_UUID, "QuartoNotebookWorker"))
+    # invokelatest: the worker was loaded within this call, after the enclosing
+    # world age was fixed. Loading it also trips the `Requires` block above, so
+    # renders in this session get QuartoTools' expand/caching integration.
+    return root === nothing ? Base.invokelatest(worker.serve!) :
+           Base.invokelatest(worker.serve!; root)
+end
+
+# The QuartoNotebookWorker source directory, resolved from `runner` or by
+# discovering an existing runner install.
+function _worker_source(runner)
+    runner_dir = runner === nothing ? _find_runner() : _runner_dir(String(runner))
+    if runner_dir === nothing
+        error("""
+              Could not locate a QuartoNotebookRunner install. Checked \
+              QUARTO_JULIA_PROJECT, Quarto's runtime Julia environment, and @quarto.
+
+              Pass the QuartoNotebookRunner package directory explicitly:
+
+                  QuartoTools.attach!(runner = "/path/to/QuartoNotebookRunner")
+              """)
+    end
+    worker_src = joinpath(runner_dir, "src", "QuartoNotebookWorker")
+    if !isfile(joinpath(worker_src, "Project.toml"))
+        error("QuartoNotebookWorker source not found at $(repr(worker_src)).")
+    end
+    return worker_src
+end
+
+# The QuartoNotebookRunner package directory a `runner` argument points at,
+# either directly (it already contains the worker source) or resolved from it as
+# an environment.
+function _runner_dir(runner::AbstractString)
+    isfile(joinpath(runner, "src", "QuartoNotebookWorker", "Project.toml")) && return runner
+    return _runner_from_env(runner)
+end
+
+# The first environment among QUARTO_JULIA_PROJECT, Quarto's runtime Julia
+# directory, and `@quarto` that declares QuartoNotebookRunner.
+function _find_runner()
+    for env in _candidate_envs()
+        dir = _runner_from_env(env)
+        dir === nothing || return dir
+    end
+    return nothing
+end
+
+function _candidate_envs()
+    envs = String[]
+    quarto_project = get(ENV, "QUARTO_JULIA_PROJECT", "")
+    isempty(quarto_project) || push!(envs, quarto_project)
+    runtime = _quarto_runtime_julia_dir()
+    runtime === nothing || push!(envs, runtime)
+    push!(envs, joinpath(first(DEPOT_PATH), "environments", "quarto"))
+    return envs
+end
+
+# QuartoNotebookRunner's package directory as declared by `env`'s manifest, or
+# `nothing` when it is absent.
+function _runner_from_env(env::AbstractString)
+    isdir(env) || isfile(env) || return nothing
+    path = try
+        Base.manifest_uuid_path(env, Base.PkgId(_QNR_UUID, "QuartoNotebookRunner"))
+    catch
+        return nothing
+    end
+    return path isa String ? path : nothing
+end
+
+# Quarto CLI's per-user runtime Julia environment, mirroring its appdirs layout.
+function _quarto_runtime_julia_dir()
+    if Sys.isapple()
+        home = get(ENV, "HOME", "")
+        isempty(home) && return nothing
+        return joinpath(home, "Library", "Caches", "quarto", "julia")
+    elseif Sys.iswindows()
+        base = get(ENV, "LOCALAPPDATA", "")
+        isempty(base) && return nothing
+        return joinpath(base, "quarto", "julia")
+    else
+        base = get(ENV, "XDG_RUNTIME_DIR", "")
+        isempty(base) && (base = get(ENV, "XDG_DATA_HOME", ""))
+        if isempty(base)
+            home = get(ENV, "HOME", "")
+            isempty(home) && return nothing
+            base = joinpath(home, ".local", "share")
+        end
+        return joinpath(base, "quarto", "julia")
     end
 end
 
