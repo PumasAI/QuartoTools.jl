@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entries, and `prune!` sweeps by age, count, total size or function name.
   Given no directory, all four cover every directory `managed_directories`
   names: the working directory's, and the one beside each cached definition
-  loaded so far
+  loaded so far. `entries` returns an `EntryList` and `usage` a `UsageList`,
+  each behaving as the vector it holds and displaying as a table whose result
+  column is fitted to the terminal
 - `track!`, `untrack!` and `is_tracked` move the boundary the dependency walk
   stops at, `dependencies` folds in a dependency the walk cannot see, and
   `ignore_global!` exempts a global from per-call hashing
@@ -55,13 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout both changed. Those entries are left in place rather than swept
 - A call to a function `cacheable` returns `false` for runs uncached. It raised
   `Cannot cache function call` before
-- `entries` and `usage` return an `EntryList` and a `UsageList`, which display
-  as the tables a vector of `Entry` and of `Usage` used to display as. Both
-  behave as the vector they hold
-- A cached call can be made from more than one task at a time
-- The table `entries` displays fits the terminal. A result type too long for
-  the room left is named by its outermost constructor, so a fitted model no
-  longer sets the width of every row. `Entry` carries the type in full
+- `serialize` writes the `Serialization` header when called inside a notebook,
+  so a file it writes carries the format version of the Julia that wrote it
 
 ## [v1.1.2] - 2026-03-17
 
