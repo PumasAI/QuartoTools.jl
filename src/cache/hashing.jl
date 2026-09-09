@@ -3,9 +3,10 @@
 # Two identical values must hash to the same digest in two different processes,
 # so nothing that varies between runs may reach the hash: no pointers, no
 # process-local object numbering, no gensym counters, and no source locations.
-# Code hashes on its lowered statements, which means renaming a local variable
-# or moving a definition down a file does not invalidate a cache entry, while
-# changing what the code does always does.
+# Code hashes on its lowered statements, so a definition the walk reaches keeps
+# its digest through a renamed local variable or a move down the file, and
+# loses it whenever what the code does changes. A cached definition's own
+# source is digested as written, and a rename there gives a new key.
 
 struct HashSink <: IO
     ctx::SHA.SHA2_256_CTX

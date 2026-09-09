@@ -142,9 +142,13 @@ call to the methods it dispatches to, then to the methods those call, to a
 fixpoint. Editing a function three calls below the one you cached invalidates
 that entry and leaves every other entry alone.
 
-Because the walk digests lowered code, renaming a local variable, adding a
-comment, or moving a definition down a file all leave a stored result valid.
-Changing what the code does never does.
+The walk digests lowered code, so a change below the cached definition that
+leaves behaviour alone leaves a stored result valid: a renamed local variable,
+an added comment, a definition moved down a file. Changing what that code does
+never does.
+
+The cached definition's own source is digested as written, so editing it
+invalidates the entry. Renaming one of its local variables counts as an edit.
 
 ### Where the walk stops
 
@@ -202,10 +206,10 @@ beside every cached definition loaded so far. Ask
 to confine any of them to one.
 
 [`QuartoTools.prune!`](@ref) sweeps by age, count, total size, or one
-function's name, and [`QuartoTools.clear!`](@ref) drops everything. A criterion
-given is the only one applied, so asking to keep five hundred entries keeps
-five hundred whatever their age, and a sweep naming no criterion drops what has
-gone unused for thirty days:
+function's name, and [`QuartoTools.clear!`](@ref) drops everything. Every
+criterion given applies, so a sweep drops an entry as soon as one of them
+condemns it. Name none of the three and the sweep drops what has gone unused
+for thirty days:
 
 ```julia
 QuartoTools.prune!(; older_than = Dates.Day(7))
