@@ -60,10 +60,7 @@ function Base.getproperty(q::QuartoSerializer, name::Symbol)
 end
 
 function Serialization.serialize(q::QuartoSerializer, m::Module)
-    if fullname(m) === (:Main, :Notebook)
-        m = Main
-    end
-    return Serialization.serialize(q.__serializer__, m)
+    return Serialization.serialize(q.__serializer__, storage_module(m))
 end
 
 """
@@ -80,6 +77,12 @@ function serialize(s::IO, x)
     x = deconstruct(x)
     if is_quarto_notebook()
         q = QuartoSerializer(Serialization.Serializer(s))
+        # `Serialization` writes its header from the entry point that builds
+        # the serializer itself, which a serializer of ours does not go
+        # through. Both sides read a stream back with or without it, and a
+        # stream carrying it can be told from a file that holds something
+        # else.
+        Serialization.writeheader(q.__serializer__)
         return Serialization.serialize(q, x)
     else
         @debug "Falling back to default serialization. Not a Quarto notebook."
@@ -89,13 +92,7 @@ end
 serialize(filename::AbstractString, x) = open(io -> serialize(io, x), filename, "w")
 
 function Serialization.deserialize_module(q::QuartoSerializer)
-    real_module = Serialization.deserialize_module(q.__serializer__)
-    if real_module === Main
-        mod = _notebook_module()
-        mod !== nothing && return mod
-        isdefined(Main, :Notebook) && isa(Main.Notebook, Module) && return Main.Notebook
-    end
-    return real_module
+    return runtime_module(Serialization.deserialize_module(q.__serializer__))
 end
 
 """
@@ -119,6 +116,8 @@ function deserialize(s::IO)
     return reconstruct(result)
 end
 deserialize(filename::AbstractString) = open(deserialize, filename)
+
+include("cache/modules.jl")
 
 
 # Content Hashing.
