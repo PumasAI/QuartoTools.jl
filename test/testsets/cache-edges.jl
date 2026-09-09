@@ -77,6 +77,20 @@ run_chosen(flag, x) = choose(flag)(x)
 
 end # module
 
+module Constructors
+
+struct Boxed
+    x::Int
+end
+
+Boxed(x, y) = Boxed(x + y)
+
+# `inferencebarrier` hides the callee, so the constructor is reachable only by
+# reading what the source names.
+opaque(x) = (build = Base.inferencebarrier(Boxed); build(x, 1).x)
+
+end # module
+
 include("cache-redefinition.jl")
 
 names_of(defs) = Set(String(m.name) for m in defs.methods)
@@ -97,6 +111,14 @@ names_of(defs) = Set(String(m.name) for m in defs.methods)
     @testset "referenced globals and types are recorded" begin
         @test GlobalRef(Chain, :scale) in defs.globals
         @test Chain.Wrapper in defs.types
+    end
+
+    # Building a type runs a constructor, so the type's own methods are part of
+    # what the call depends on.
+    @testset "constructors of a referenced type are reached" begin
+        constructors = filter(m -> m.name === :Wrapper, defs.methods)
+        @test !isempty(constructors)
+        @test all(m -> m.module === Chain, constructors)
     end
 
     @testset "methods reached only through foreign code are found" begin
@@ -179,6 +201,12 @@ end
             kept = QuartoTools.RESOLUTIONS[signature]
             return QuartoTools.resolve(signature) !== kept
         end
+    end
+
+    @testset "a change to a constructor inference cannot resolve invalidates" begin
+        before = QuartoTools.dependency_digest(Constructors.opaque, Tuple{Int})
+        redefine(Constructors, :(Boxed(x, y) = Boxed(x + y + 100)))
+        @test before != QuartoTools.dependency_digest(Constructors.opaque, Tuple{Int})
     end
 
     @testset "a change to a referenced global invalidates" begin

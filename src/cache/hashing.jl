@@ -244,11 +244,26 @@ function callable_methods(@nospecialize(T::Type))
     # call actually reaches is its callee, which the call names itself.
     T === KWCALL_TYPE && return Method[]
     primary = Base.unwrap_unionall(T)
+    primary isa DataType || return Method[]
+    # A constructor is a method of `Type{T}`, which is abstract, so the test
+    # below would drop it. The table hanging off `Type` holds every constructor
+    # in the system, so the signature is intersected instead.
+    is_type_type(primary) && return matching_methods(T)
     # `Tuple{Any, Vararg{Any}}` matches every method in the system. Abstract
     # types are never the exact type of a callable, so skip them.
-    (primary isa DataType && !isabstracttype(primary)) || return Method[]
+    isabstracttype(primary) && return Method[]
     table = own_method_table(primary)
     table === nothing || return Method[m for m in Base.MethodList(table) if is_live(m)]
+    return matching_methods(T)
+end
+
+const TYPE_TYPENAME = Base.unwrap_unionall(Type).name
+
+is_type_type(primary::DataType) = primary.name === TYPE_TYPENAME
+
+# The methods a call to something of type `T` can reach, found by intersecting
+# its signature against the whole system.
+function matching_methods(@nospecialize(T::Type))
     matches = Base._methods_by_ftype(Tuple{T,Vararg{Any}}, -1, Base.get_world_counter())
     matches isa Vector || return Method[]
     return Method[match.method for match in matches if is_live(match.method)]
