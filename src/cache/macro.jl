@@ -90,9 +90,13 @@ function cache_definition(expr::Expr, mod::Module, source::LineNumberNode)
     definition = MacroTools.splitdef(expr)
 
     name = definition[:name]
-    base, receiver = definition_name(name)
-    base === nothing && error("`@cache` cannot name results for a definition of `$(name)`.")
-    implementation = Symbol('#', base, "#implementation")
+    path, receiver = definition_name(name)
+    path === nothing && error("`@cache` cannot name results for a definition of `$(name)`.")
+    base = last(path)
+    # The implementation is defined beside the call site, so two functions that
+    # share a bare name would share it too. The whole path tells them apart,
+    # while every method of one function still lands on one implementation.
+    implementation = Symbol('#', join(path, '#'), "#implementation")
 
     args, forwarded = forwardable(definition[:args])
     kwargs, forwarded_kws = forwardable(definition[:kwargs])
@@ -142,17 +146,18 @@ function cache_definition(expr::Expr, mod::Module, source::LineNumberNode)
 end
 
 """
-    definition_name(name) -> (base, receiver)
+    definition_name(name) -> (path, receiver)
 
-The name to store results under, and how the definition names its receiver.
+The path the definition is written under, and how it names its receiver.
 
-`base` is the bare name, so `Base.sum` gives `:sum`. `receiver` is `nothing`
-for an ordinary definition, and for a callable object it is the name the
-object is bound to along with the declaration that binds it, so
-`(c::Counter)(x)` gives `(:Counter, (:c, :(c::Counter)))`.
+`path` runs from the outermost module down to the bare name, so `Base.sum`
+gives `[:Base, :sum]`. `receiver` is `nothing` for an ordinary definition, and
+for a callable object it is the name the object is bound to along with the
+declaration that binds it, so `(c::Counter)(x)` gives
+`([:Counter], (:c, :(c::Counter)))`.
 """
 function definition_name(@nospecialize(name))
-    Meta.isexpr(name, :(::)) || return (base_name(name), nothing)
+    Meta.isexpr(name, :(::)) || return (qualified_path(name), nothing)
     declaration = name::Expr
     if length(declaration.args) == 1
         # Written without a name for the object, as in `(::Counter)(x)`.
@@ -162,17 +167,35 @@ function definition_name(@nospecialize(name))
     else
         bound, type = declaration.args
     end
-    return (base_name(type), (bound, declaration))
+    return (qualified_path(type), (bound, declaration))
 end
 
 name_with_receiver(name::Expr, bound) = Expr(:(::), bound, name.args[end])
 
 source_file(source::LineNumberNode) = source.file === nothing ? "" : String(source.file)
 
-base_name(name::Symbol) = name
-base_name(name::Expr) = Meta.isexpr(name, :., 2) ? base_name(name.args[2]) : nothing
-base_name(name::QuoteNode) = base_name(name.value)
-base_name(@nospecialize(other)) = nothing
+"""
+    qualified_path(name) -> Union{Vector{Symbol},Nothing}
+
+The modules a name is written under, followed by the bare name, so `Base.sum`
+gives `[:Base, :sum]`. `nothing` when the expression names nothing that
+results can be stored under.
+"""
+qualified_path(name::Symbol) = Symbol[name]
+qualified_path(name::QuoteNode) = qualified_path(name.value)
+function qualified_path(name::Expr)
+    Meta.isexpr(name, :., 2) || return nothing
+    outer = qualified_path(name.args[1])
+    inner = qualified_path(name.args[2])
+    (outer === nothing || inner === nothing) && return nothing
+    return Symbol[outer; inner]
+end
+qualified_path(@nospecialize(other)) = nothing
+
+function base_name(@nospecialize(name))
+    path = qualified_path(name)
+    return path === nothing ? nothing : last(path)
+end
 
 """
     forwardable(arguments) -> (declarations, forwarding)

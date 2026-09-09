@@ -59,6 +59,18 @@ struct Anonymous end
 
 QuartoTools.@cache (::Anonymous)(x) = (x, rand())
 
+# Two functions of the same bare name, cached from one module.
+module Left
+function scaled end
+end
+
+module Right
+function scaled end
+end
+
+QuartoTools.@cache Left.scaled(x) = x + 1
+QuartoTools.@cache Right.scaled(x) = x * 100
+
 function with_cache_directory(body)
     mktempdir() do directory
         QuartoTools.cache_directory!(directory)
@@ -103,6 +115,13 @@ include("cache-redefinition.jl")
 
             @test anonymous(1, 2) == anonymous(1, 2)
             @test last(anonymous(1, 2)) != last(anonymous(1, 3))
+        end
+    end
+
+    @testset "two modules can each hold a definition of one name" begin
+        with_cache_directory() do directory
+            @test Left.scaled(1) == 2
+            @test Right.scaled(1) == 100
         end
     end
 
