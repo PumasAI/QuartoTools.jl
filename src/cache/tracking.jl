@@ -43,8 +43,12 @@ function is_tracked(mod::Module)
             scope = parent
         end
         holds_rebuilt_types(mod) && return true
+        # Reading the project comes before the memo is consulted, since a
+        # project that has changed drops every decision taken under the one
+        # before it.
+        uuids = active_project_uuids()
         root = Base.moduleroot(mod)
-        return get!(() -> tracked_by_default(root), TRACK_RESULTS, root)
+        return get!(() -> tracked_by_default(root, uuids), TRACK_RESULTS, root)
     end
 end
 
@@ -115,7 +119,7 @@ function reset_tracking!()
     return nothing
 end
 
-function tracked_by_default(root::Module)
+function tracked_by_default(root::Module, uuids::Union{Set{Base.UUID},Nothing})
     (root === Base || root === Core) && return false
     # Our own code takes part in no computation being cached.
     root === (@__MODULE__) && return false
@@ -135,11 +139,11 @@ function tracked_by_default(root::Module)
         startswith(path, normpath(joinpath(depot, "packages"))) && return false
         startswith(path, normpath(joinpath(depot, "juliaup"))) && return false
     end
-    return in_active_project(package_uuid(root))
+    return in_active_project(package_uuid(root), uuids)
 end
 
 """
-    in_active_project(uuid) -> Bool
+    in_active_project(uuid, uuids) -> Bool
 
 Whether a package belongs to the environment the cached code runs in.
 
@@ -150,9 +154,11 @@ how that happens, so its own state decides nothing about a result. A module
 with no package identity, and any package at all when no manifest says
 otherwise, belongs to the project.
 """
-function in_active_project(uuid::Union{Base.UUID,Nothing})
+function in_active_project(
+    uuid::Union{Base.UUID,Nothing},
+    uuids::Union{Set{Base.UUID},Nothing},
+)
     uuid === nothing && return true
-    uuids = active_project_uuids()
     uuids === nothing && return true
     return uuid in uuids
 end
@@ -170,6 +176,10 @@ function active_project_uuids()
         cached = get(PROJECT_UUIDS, project, nothing)
         cached === nothing || cached[1] == stamp || (cached = nothing)
         if cached === nothing
+            # Which packages belong is what the boundary is drawn from, so
+            # every decision taken under the project as it stood goes too.
+            empty!(TRACK_RESULTS)
+            forget_analysis!()
             cached = (stamp, read_project_uuids(project, manifest))
             PROJECT_UUIDS[project] = cached
         end
