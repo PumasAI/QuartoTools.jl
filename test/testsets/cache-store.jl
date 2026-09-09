@@ -290,6 +290,105 @@ end
     end
 end
 
+@testset "display" begin
+    with_cache_directory() do directory
+        reading(1)
+        counting(2)
+
+        listed = sprint(show, MIME"text/plain"(), QuartoTools.entries())
+        @test occursin("2 entries, ", listed)
+        @test occursin(directory, listed)
+        @test occursin("last used", listed)
+        @test occursin("reading", listed)
+
+        grouped = sprint(show, MIME"text/plain"(), QuartoTools.usage())
+        @test occursin("newest use", grouped)
+        @test occursin("counting", grouped)
+
+        @test sprint(show, MIME"text/plain"(), QuartoTools.EntryList()) ==
+              "no stored results"
+        @test sprint(show, MIME"text/plain"(), QuartoTools.UsageList()) ==
+              "no stored results"
+        entry = only(filter(entry -> entry.name == "reading", QuartoTools.entries()))
+        @test occursin("Entry(reading, ", sprint(show, entry))
+    end
+end
+
+# Write an entry by hand, so that a result type longer than any this suite
+# computes can be put in front of the table.
+function store_metadata(directory, name, result_type)
+    mkpath(joinpath(directory, name))
+    write(joinpath(directory, name, "abcdef.jls"), "x")
+    write(
+        joinpath(directory, name, "abcdef.toml"),
+        """
+        function = "$(name)"
+        result_type = "$(result_type)"
+        """,
+    )
+    return nothing
+end
+
+@testset "a long result type does not take the table with it" begin
+    # A fitted model's type runs to thousands of characters, and every column
+    # is padded to its widest cell, so one of those would set the width of
+    # every row.
+    huge = string(
+        "Pumas.FittedPumasModel{",
+        repeat("Pumas.RealDomain{Int64, Float64}, ", 100),
+        "Nothing}",
+    )
+
+    @testset "the outermost constructor stands in for the whole" begin
+        @test QuartoTools.fit_type("Matrix{Float64}", 40) == "Matrix{Float64}"
+        @test QuartoTools.fit_type(huge, 40) == "Pumas.FittedPumasModel{…}"
+        @test QuartoTools.fit_type("Int64", 40) == "Int64"
+        # A name with no room even for that is cut where the room runs out.
+        @test QuartoTools.fit_type(huge, 10) == "Pumas.Fit…"
+        @test length(QuartoTools.fit_type(huge, 10)) == 10
+    end
+
+    @testset "the table fits the terminal it prints to" begin
+        mktempdir() do directory
+            store_metadata(directory, "fit_population", huge)
+            store_metadata(directory, "load_table", "Matrix{Float64}")
+            # Below the width the bounded columns need, wrapping is the
+            # terminal's business. `fit_type` covers what little room leaves.
+            for width in (80, 120, 200)
+                narrow = IOContext(IOBuffer(), :displaysize => (24, width))
+                show(narrow, MIME"text/plain"(), QuartoTools.entries(directory))
+                lines = split(String(take!(narrow.io)), '\n')
+                # The first line names the directory, and a path is as long as
+                # it is. Every row of the table below it fits.
+                @test maximum(length, lines[2:end]) <= width
+            end
+            # The short type keeps the detail that makes it worth reading.
+            listed = sprint(
+                show,
+                MIME"text/plain"(),
+                QuartoTools.entries(directory);
+                context = :displaysize => (24, 80),
+            )
+            @test occursin("Pumas.FittedPumasModel{…}", listed)
+            @test occursin("Matrix{Float64}", listed)
+        end
+    end
+end
+
+# A table is displayed for a type this package owns, so that loading it changes
+# how nothing else prints. A plain vector of entries keeps Base's display.
+@testset "the table display belongs to this package" begin
+    with_cache_directory() do directory
+        reading(1)
+        @test QuartoTools.entries() isa QuartoTools.EntryList
+        @test QuartoTools.usage() isa QuartoTools.UsageList
+        @test !occursin(
+            "last used",
+            sprint(show, MIME"text/plain"(), collect(QuartoTools.entries())),
+        )
+    end
+end
+
 @testset "drop!" begin
     with_cache_directory() do directory
         reading(1)

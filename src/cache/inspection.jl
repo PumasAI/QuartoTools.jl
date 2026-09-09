@@ -196,3 +196,169 @@ function drop!(entry::Entry)
     rm(metadata_path(entry.path); force = true)
     return stored
 end
+
+
+# Display.
+
+format_time(when::Dates.DateTime) = Dates.format(when, "yyyy-mm-dd HH:MM")
+
+# Entries can come from several directories at once, and then there is no one
+# place to name.
+function located_in(found::AbstractVector{Entry})
+    directories = unique([dirname(dirname(entry.path)) for entry in found])
+    return length(directories) == 1 ? string(" in ", first(directories)) : ""
+end
+
+"""
+    fit_type(type::AbstractString, room::Int) -> String
+
+`type` as the table should print it, given `room` characters to print it in.
+
+A stored result can be a fitted model whose type runs to thousands of
+characters, and a column is as wide as its widest cell, so one of those would
+set the width of every row. A type that fits is printed whole, since the
+element type of a matrix and the field names of a named tuple are what make
+the column worth reading. One that does not is named by its outermost
+constructor, which is the part a reader is scanning for, and cut where even
+that overruns.
+"""
+function fit_type(type::AbstractString, room::Int)
+    length(type) <= room && return String(type)
+    collapsed = outer_type(type)
+    length(collapsed) <= room && return collapsed
+    return clip_text(collapsed, room)
+end
+
+function outer_type(type::AbstractString)
+    opening = findfirst('{', type)
+    opening === nothing && return String(type)
+    return string(type[1:prevind(type, opening)], "{…}")
+end
+
+function clip_text(text::AbstractString, room::Int)
+    room <= 0 && return ""
+    room == 1 && return "…"
+    return string(first(text, room - 1), "…")
+end
+
+# What the result column has to itself, once the columns whose width the
+# content settles have taken theirs and the gaps between them are counted.
+function room_for_type(io::IO, taken::Integer, columns::Integer)
+    width = displaysize(io)[2]
+    return max(width - taken - 2 * (columns - 1), 3)
+end
+
+Base.show(io::IO, entry::Entry) = print(
+    io,
+    "Entry(",
+    entry.name,
+    ", ",
+    Base.format_bytes(entry.bytes),
+    ", used ",
+    format_time(entry.used),
+    ")",
+)
+
+function Base.show(io::IO, ::MIME"text/plain", found::EntryList)
+    if isempty(found)
+        print(io, "no stored results")
+        return nothing
+    end
+    total = sum(entry -> entry.bytes, found)
+    println(
+        io,
+        length(found),
+        length(found) == 1 ? " entry, " : " entries, ",
+        Base.format_bytes(total),
+        located_in(found),
+    )
+    headers = ["function", "bytes", "last used", "result"]
+    leading = [
+        [entry.name, Base.format_bytes(entry.bytes), format_time(entry.used)] for
+        entry in found
+    ]
+    taken = sum(
+        column ->
+            maximum(length, String[headers[column]; [row[column] for row in leading]]),
+        eachindex(first(leading)),
+    )
+    room = room_for_type(io, taken, length(headers))
+    print_columns(
+        io,
+        headers,
+        [:left, :right, :left, :left],
+        [
+            String[leading[index]; fit_type(found[index].result_type, room)] for
+            index in eachindex(found)
+        ],
+    )
+    return nothing
+end
+
+function Base.show(io::IO, usage::Usage)
+    print(
+        io,
+        "Usage(",
+        usage.name,
+        ", ",
+        usage.entries,
+        usage.entries == 1 ? " entry, " : " entries, ",
+        Base.format_bytes(usage.bytes),
+        ")",
+    )
+    return nothing
+end
+
+function Base.show(io::IO, ::MIME"text/plain", found::UsageList)
+    if isempty(found)
+        print(io, "no stored results")
+        return nothing
+    end
+    print_columns(
+        io,
+        ["function", "entries", "bytes", "oldest use", "newest use"],
+        [:left, :right, :right, :left, :left],
+        [
+            [
+                usage.name,
+                string(usage.entries),
+                Base.format_bytes(usage.bytes),
+                format_time(usage.oldest),
+                format_time(usage.newest),
+            ] for usage in found
+        ],
+    )
+    return nothing
+end
+
+function print_columns(
+    io::IO,
+    headers::Vector{String},
+    alignments::Vector{Symbol},
+    rows::Vector{Vector{String}},
+)
+    widths = [
+        maximum(length, String[headers[column]; [row[column] for row in rows]]) for
+        column in eachindex(headers)
+    ]
+    print_row(io, headers, alignments, widths)
+    for row in rows
+        println(io)
+        print_row(io, row, alignments, widths)
+    end
+    return nothing
+end
+
+function print_row(
+    io::IO,
+    cells::Vector{String},
+    alignments::Vector{Symbol},
+    widths::Vector{Int},
+)
+    padded = [
+        alignment === :right ? lpad(cell, width) : rpad(cell, width) for
+        (cell, alignment, width) in zip(cells, alignments, widths)
+    ]
+    print(io, rstrip(join(padded, "  ")))
+    return nothing
+end
