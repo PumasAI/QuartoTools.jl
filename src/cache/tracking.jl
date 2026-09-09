@@ -217,11 +217,3 @@ function package_uuid(root::Module)
         nothing
     end
 end
-
-function safe_mtime(path)
-    return try
-        mtime(path)
-    catch
-        0.0
-    end
-end

@@ -218,4 +218,47 @@ end
     end
 end
 
+# The analyses, resolutions and tracking decisions are one set per process, and
+# a cached call can come from any task. Reading a dictionary another task is
+# growing hands back an undefined reference, which reaches the caller as a call
+# that could not be keyed. Threads are what makes the tasks overlap, so this
+# runs in a process that has some.
+@testset "a concurrent walk keys every call" begin
+    script = """
+    import QuartoTools
+    import Logging
+
+    QuartoTools.cache_directory!(mktempdir())
+
+    inner(x) = x * 2
+    middle(x) = inner(x) + 1
+    QuartoTools.@cache outer(x) = (middle(x), x)
+
+    trailing(x) = x - 3
+    QuartoTools.@cache second(x) = (trailing(x), x)
+
+    function raced(rounds, tasks)
+        recorded = IOBuffer()
+        agreed = Logging.with_logger(Logging.SimpleLogger(recorded, Logging.Warn)) do
+            expected = [outer(1), second(1)]
+            held = true
+            for _ = 1:rounds
+                QuartoTools.forget_analysis!()
+                racing = [Threads.@spawn [outer(1), second(1)] for _ = 1:tasks]
+                held &= all(fetch(task) == expected for task in racing)
+            end
+            return held
+        end
+        return agreed && isempty(String(take!(recorded))) && Threads.nthreads() > 1
+    end
+
+    print(raced(30, 8))
+    """
+    answered = read(
+        `$(Base.julia_cmd()) --startup-file=no --project=$(Base.active_project()) -t 4 -e $script`,
+        String,
+    )
+    @test answered == "true"
+end
+
 end # module

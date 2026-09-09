@@ -3,6 +3,7 @@ module QuartoTools
 # Imports.
 
 import Dates
+import MacroTools
 import Pkg
 import Preferences
 import REPL
@@ -133,13 +134,29 @@ include("cache/edges.jl")
 
 # Caching.
 
+include("cache/store.jl")
+include("cache/inspection.jl")
+
+"""
+    Cached(f, mod, file, expr)
+
+A function paired with where it was called from, so that calling it consults
+the cache. [`@cache`](@ref) and the cell transform both build one of these.
+"""
 struct Cached{F}
     f::F
-    mod::Module
-    file::String
-    project::String
-    expr::Expr
+    site::CallSite
 end
+
+function Cached(@nospecialize(f), mod::Module, file::AbstractString, expr::Expr)
+    callee = callee_of(expr)
+    name = String(something(base_name(callee), :call))
+    return Cached{Core.Typeof(f)}(f, CallSite(name, mod, file, content_hex(callee)))
+end
+
+# The transform hands over the whole assignment or call it rewrote, and the
+# callee is what the entry is named after.
+callee_of(expr::Expr) = Meta.isexpr(expr, :(=), 2) ? callee_of(expr.args[2]) : expr.args[1]
 
 """
     deconstruct(value::T) -> S
@@ -170,143 +187,24 @@ QuartoTools.cacheable(::typeof(Base.read)) = false
 """
 cacheable(f) = true
 
+"""
+    dependencies(f) -> Tuple
+
+Extra values that a cached call to `f` depends on, folded into its cache key.
+Use this for a dependency the walk cannot see, such as a callable fetched out
+of a container, or a data file whose contents matter:
+
+```julia
+QuartoTools.dependencies(::typeof(load_table)) = (read("input.csv"),)
+```
+"""
+dependencies(f) = ()
+
 @inline function (cache::Cached)(args...; kws...)
-    cacheable(cache.f) || error("Cannot cache function call: $(cache.expr)")
-
-    key = _cache_key(cache, args, kws)
-    cache_file = joinpath(_cache_dir(cache), key)
-
-    if safe_isfile(cache_file)
-        @debug "Loading cached result from" cache_file
-        try
-            result_from_file = QuartoTools.deserialize(cache_file)
-            last_used = Dates.now()
-            _update_metadata!(cache_file, last_used)
-
-            return result_from_file
-        catch error
-            @warn(
-                "Failed to load cached result, re-running.",
-                error,
-                stacktrace = stacktrace(),
-                cache_file,
-                cache,
-                args,
-                kws,
-            )
-        end
-    end
-
-    result = cache.f(args...; kws...)
-    created = Dates.now()
-
-    mkpath(dirname(cache_file))
-    try
-        QuartoTools.serialize(cache_file, result)
-        _create_metadata(cache_file, cache, created, args, kws, result)
-    catch error
-        @warn(
-            "Failed to save cached result.",
-            error,
-            stacktrace = stacktrace(),
-            cache_file,
-            cache,
-            args,
-            kws,
-        )
-    end
-
-    return result
+    return run_cached(cache.site, cache.f, cache.f, args, values(kws))
 end
 
-function _create_metadata(cache_file, cache, created, args, kws, result)
-    metadata = _metadata(cache, created, args, kws, result)
-    open("$cache_file.toml", "w") do io
-        TOML.print(io, metadata; sorted = true)
-    end
-end
-
-function _update_metadata!(cache_file, last_used)
-    metadata = TOML.parsefile("$cache_file.toml")
-    metadata["last_used"] = string(last_used)
-    open("$cache_file.toml", "w") do io
-        TOML.print(io, metadata; sorted = true)
-    end
-end
-
-function _metadata(cache, created, args, kws, result)
-    args_str = string.(typeof.(collect(args)))
-    kws_str = Dict([string(k) => string(typeof(v)) for (k, v) in pairs(kws)])
-    metadata = Dict{String,Any}(
-        "created" => string(created),
-        "last_used" => string(created),
-        "function" => string(cache.f),
-        "module" => string(cache.mod),
-        "project" => cache.project,
-        "result_type" => string.(typeof(result)),
-    )
-    isempty(args_str) || (metadata["arg_types"] = args_str)
-    isempty(kws_str) || (metadata["kw_types"] = kws_str)
-    return metadata
-end
-
-function _cache_dir(c::Cached)
-    dir = safe_isfile(c.file) ? dirname(c.file) : pwd()
-    return normpath(joinpath(dir, ".cache"))
-end
-
-function _cache_key(c::Cached, args, kws)
-    payload = (;
-        version = VERSION,
-        func = c.f,
-        method = code_lowered(c.f, typeof(args)),
-        mod = c.mod,
-        file = safe_isfile(c.file) ? c.file : "",
-        project = read(c.project),
-        args = args,
-        kws = kws,
-    )
-    return bytes2hex(content_hash(payload))
-end
-
-"""
-    @cache func(args...; kws...)
-
-Cache the result of a function call with the given arguments and keyword
-arguments.
-
-The caching key is based on:
-
-  - The full `VERSION` of Julia.
-  - The `Function` being called.
-  - The `Module` in which the function is called.
-  - The file in which the function is called.
-  - The active `Project.toml`.
-  - The argument values and keyword argument values passed to the function.
-
-The cache is stored in a `.cache` directory in the same directory as the file in
-which the function is called. Deleting this directory will clear the cache.
-"""
-macro cache(expr)
-    if Meta.isexpr(expr, :call)
-        # Swap out the function call with a cached version of it that overloads
-        # calls with a check for cached results for the specific argument
-        # combination.
-        expr.args[1] = Expr(
-            :call,
-            Cached,
-            expr.args[1],
-            __module__,
-            String(__source__.file),
-            Expr(:call, Base.active_project),
-            QuoteNode(deepcopy(expr)),
-        )
-        return esc(expr)
-    else
-        # TODO: maybe expand the use of `@cache` to other expressions?
-        error("`@cache` is only valid on a function call expression.")
-    end
-end
+include("cache/macro.jl")
 
 active_repl_backend_available() =
     isdefined(Base, :active_repl_backend) && Base.active_repl_backend !== nothing
@@ -389,7 +287,6 @@ function _transform_ast_cache(expr::Expr)
                                 callexpr.args[1],
                                 Expr(:macrocall, Symbol("@__MODULE__"), lnn[]),
                                 String(lnn[].file),
-                                Expr(:call, Base.active_project),
                                 QuoteNode(deepcopy(ex)),
                             )
                             return Expr(
@@ -593,6 +490,9 @@ function __init__()
     if ccall(:jl_generating_output, Cint, ()) == 0
         _init_transform_ast_cache()
     end
+
+    disabled = get(ENV, "QUARTOTOOLS_CACHE_DISABLE", "")
+    ENABLED[] = !(lowercase(disabled) in ("1", "true", "yes"))
 
     # Since UUIDs are checked by the registry checks for package extensions we
     # cannot make these "real" extensions and have to rely on `Requires.jl`.
