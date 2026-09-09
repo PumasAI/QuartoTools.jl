@@ -1,4 +1,5 @@
 [deps]
 Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
 QuartoNotebookRunner = "4c0109c6-14e9-4c88-93f0-2b974d3468f4"
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

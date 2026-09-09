@@ -29,6 +29,9 @@ using Test
 
 @testset "QuartoTools" begin
     include("testsets/serialization.jl")
+    include("testsets/cache-tracking.jl")
+    include("testsets/cache-hashing.jl")
+    include("testsets/cache-edges.jl")
     include("testsets/caching.jl")
     include("testsets/implicit-caching.jl")
     include("testsets/expandables.jl")

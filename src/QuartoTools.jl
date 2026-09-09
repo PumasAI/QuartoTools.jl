@@ -117,111 +117,18 @@ function deserialize(s::IO)
 end
 deserialize(filename::AbstractString) = open(deserialize, filename)
 
+
+# Content hashing, and the definitions a cached call depends on.
+#
+# A key covers the code a call reaches, not just the function it names, so
+# these carry the walk out to the methods a call can dispatch to, the boundary
+# it stops at, and the hashing that turns all of it into bytes.
+
+include("cache/compat.jl")
 include("cache/modules.jl")
-
-
-# Content Hashing.
-
-"""
-    content_hash(object)
-
-Compute a content hash for the given object. This should result in hashes that
-match between different instances of identical objects. Used for cache keys.
-"""
-function content_hash(@nospecialize(object))
-    serializer = ContentHashSerializer()
-    Serialization.serialize(serializer, object)
-    return SHA.digest!(serializer.io.ctx)
-end
-
-struct HashContext <: IO
-    ctx::SHA.SHA1_CTX
-end
-
-function Base.unsafe_write(io::HashContext, ptr::Ptr{UInt8}, nb::UInt)
-    for _ = 1:nb
-        SHA.update!(io.ctx, (unsafe_load(ptr),))
-        ptr += 1
-    end
-    return nb
-end
-Base.write(io::HashContext, u::UInt8) = SHA.update!(io.ctx, (u,))
-
-struct ContentHashSerializer <: Serialization.AbstractSerializer
-    io::HashContext
-    __serializer__::Serialization.Serializer
-
-    function ContentHashSerializer()
-        serializer = Serialization.Serializer(IOBuffer())
-        io = HashContext(SHA.SHA1_CTX())
-        return new(io, serializer)
-    end
-end
-
-function Base.setproperty!(q::ContentHashSerializer, name::Symbol, value)
-    if name in (:io, :__serializer__)
-        return setfield!(q, name, value)
-    else
-        return Base.setproperty!(getfield(q, :__serializer__), name, value)
-    end
-end
-
-function Base.getproperty(q::ContentHashSerializer, name::Symbol)
-    if name in (:io, :__serializer__)
-        return getfield(q, name)
-    else
-        return getproperty(getfield(q, :__serializer__), name)
-    end
-end
-
-function Serialization.serialize(cs::ContentHashSerializer, f::Function)
-    name = String(nameof(f))
-    if startswith(name, "#")
-        for each in code_lowered(f)
-            Serialization.serialize(cs, each.code)
-        end
-    else
-        invoke(
-            Serialization.serialize,
-            Tuple{Serialization.AbstractSerializer,Function},
-            cs,
-            f,
-        )
-    end
-end
-
-Serialization.serialize(::ContentHashSerializer, ::Core.LineInfoNode) = nothing
-Serialization.serialize(::ContentHashSerializer, ::LineNumberNode) = nothing
-
-function Serialization.serialize(cs::ContentHashSerializer, tn::Core.TypeName)
-    if !Serialization.serialize_cycle(cs, tn)
-        if startswith(String(tn.name), '#')
-            obj = getfield(tn.module, tn.name)
-            if isdefined(obj, :instance)
-                for ci in code_lowered(obj.instance)
-                    Serialization.serialize(cs, ci.code)
-                end
-                return nothing
-            end
-        else
-            Serialization.writetag(cs.io, Serialization.TYPENAME_TAG)
-            Serialization.write(cs.io, Serialization.object_number(cs, tn))
-            Serialization.serialize_typename(cs, tn)
-        end
-    end
-    return nothing
-end
-
-function Serialization.serialize(cs::ContentHashSerializer, s::Symbol)
-    str = String(s)
-    stripped_s = contains(str, '#') ? Symbol(filter(!isdigit, str)) : s
-    return invoke(
-        Serialization.serialize,
-        Tuple{Serialization.AbstractSerializer,Symbol},
-        cs,
-        stripped_s,
-    )
-end
+include("cache/tracking.jl")
+include("cache/hashing.jl")
+include("cache/edges.jl")
 
 
 # Caching.
