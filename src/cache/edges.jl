@@ -60,7 +60,9 @@ function reachable_definitions(@nospecialize(f), @nospecialize(argtypes::Type))
             empty!(TRACKED_CALLABLES)
             ANALYSED_WORLD[] = world
         end
-        return get!(() -> analyse(f, argtypes), ANALYSES, (f, argtypes))
+        # What a call reaches follows from the type of the callable, so every
+        # instance of one closure type shares an answer.
+        return get!(() -> analyse(f, argtypes), ANALYSES, (Core.Typeof(f), argtypes))
     end
 end
 

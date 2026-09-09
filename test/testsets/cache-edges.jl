@@ -246,6 +246,16 @@ end
     end
 end
 
+# `analyse` reads the type of the callable and nothing else, so an entry per
+# instance would grow the memo for as long as the world age holds.
+@testset "closures of one type share an analysis" begin
+    QuartoTools.forget_analysis!()
+    for i = 1:5
+        QuartoTools.reachable_definitions(x -> x + i, Tuple{Int})
+    end
+    @test length(QuartoTools.ANALYSES) == 1
+end
+
 # The analyses, resolutions and tracking decisions are one set per process, and
 # a cached call can come from any task. Reading a dictionary another task is
 # growing hands back an undefined reference, which reaches the caller as a call
