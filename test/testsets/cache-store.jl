@@ -8,6 +8,24 @@ import Dates
 QuartoTools.@cache reading(x) = (x, rand())
 QuartoTools.@cache counting(x) = (x + 1, rand())
 
+const RUNS = Ref(0)
+
+QuartoTools.@cache counted(x) = (RUNS[] += 1; (x, rand()))
+
+# Stand a method in front of one of the package's own for the duration of
+# `body`, then take it away again. The stand-in is more specific than the
+# method it hides, so removing it leaves the original as it was.
+function standing_in(body, @nospecialize(f), definition::Expr)
+    before = Set(methods(f))
+    Core.eval(QuartoTools, definition)
+    stand_in = only(setdiff(Set(methods(f)), before))
+    try
+        return body()
+    finally
+        Base.delete_method(stand_in)
+    end
+end
+
 function with_cache_directory(body)
     mktempdir() do directory
         QuartoTools.cache_directory!(directory)
@@ -398,6 +416,45 @@ end
         @test !isfile(QuartoTools.metadata_path(entry.path))
         # Dropping what has already gone reports that there was nothing to do.
         @test !QuartoTools.drop!(entry)
+    end
+end
+
+# Ctrl-C says stop. Reading it as a cache failure would throw away the entry
+# the read was interrupted in, or run the call the keying was interrupted in.
+@testset "an interrupt stops the call" begin
+    @testset "an interrupted read keeps the entry" begin
+        with_cache_directory() do directory
+            reading(40)
+            entry = only(QuartoTools.entries()).path
+            standing_in(
+                QuartoTools.load_result,
+                :(load_result(path::String) = throw(InterruptException())),
+            ) do
+                @test_throws InterruptException Base.@invokelatest reading(40)
+            end
+            @test isfile(entry)
+        end
+    end
+
+    @testset "an interrupted keying leaves the call unrun" begin
+        with_cache_directory() do directory
+            RUNS[] = 0
+            standing_in(
+                QuartoTools.cache_key,
+                :(
+                    cache_key(
+                        site::CallSite,
+                        @nospecialize(public),
+                        @nospecialize(implementation),
+                        args::Tuple{Int},
+                        kws::NamedTuple,
+                    ) = throw(InterruptException())
+                ),
+            ) do
+                @test_throws InterruptException Base.@invokelatest counted(1)
+            end
+            @test RUNS[] == 0
+        end
     end
 end
 

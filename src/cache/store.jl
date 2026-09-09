@@ -550,7 +550,8 @@ end
 
 Return the stored result for this call, or run `implementation` and store what
 it returns. Any failure to key, read or write falls back to running the call:
-a wrong result is never returned in place of a slow one.
+a wrong result is never returned in place of a slow one. An interrupt is not
+such a failure, and stops the call where it was.
 """
 function run_cached(
     site::CallSite,
@@ -566,6 +567,7 @@ function run_cached(
     key = try
         cache_key(site, public, implementation, args, kws)
     catch error
+        error isa InterruptException && rethrow()
         @warn "Cannot key this call, running it uncached." site.name mod =
             module_name(site.mod) error maxlog = 1
         return implementation(args...; kws...)
@@ -578,6 +580,7 @@ function run_cached(
             record_use(path)
             return result
         catch error
+            error isa InterruptException && rethrow()
             @warn "Cannot read a stored result, running the call again." path error maxlog =
                 1
             # A file that cannot be read costs a failed read on every call, and
@@ -591,6 +594,7 @@ function run_cached(
         store_result(path, result)
         write_metadata(path, site, result, args, kws)
     catch error
+        error isa InterruptException && rethrow()
         @warn "Cannot store this result." path error maxlog = 1
     end
     return result
