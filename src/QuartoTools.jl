@@ -11,6 +11,7 @@ import Requires
 import SHA
 import Serialization
 import TOML
+import xxHash_jll
 
 
 # Exports.
@@ -138,7 +139,7 @@ include("cache/store.jl")
 include("cache/inspection.jl")
 
 """
-    Cached(f, mod, file, expr)
+    Cached(f, mod, file, name, digest)
 
 A function paired with where it was called from, so that calling it consults
 the cache. [`@cache`](@ref) and the cell transform both build one of these.
@@ -148,15 +149,16 @@ struct Cached{F}
     site::CallSite
 end
 
-function Cached(@nospecialize(f), mod::Module, file::AbstractString, expr::Expr)
-    callee = callee_of(expr)
-    name = String(something(base_name(callee), :call))
-    return Cached{Core.Typeof(f)}(f, CallSite(name, mod, file, content_hex(callee)))
-end
-
-# The transform hands over the whole assignment or call it rewrote, and the
-# callee is what the entry is named after.
-callee_of(expr::Expr) = Meta.isexpr(expr, :(=), 2) ? callee_of(expr.args[2]) : expr.args[1]
+# The name a result is stored under and the digest of the callee it came from
+# are worked out by whatever builds the call, since the module a cell runs in
+# is the only part of a site that the cell itself knows.
+Cached(
+    @nospecialize(f),
+    mod::Module,
+    file::AbstractString,
+    name::AbstractString,
+    digest::AbstractString,
+) = Cached{Core.Typeof(f)}(f, CallSite(name, mod, file, digest))
 
 """
     deconstruct(value::T) -> S
@@ -254,9 +256,9 @@ function walk(f, other; before = Returns(true), after = Returns(true))
 end
 
 function _transform_ast_cache(expr::Expr)
-    enabled, ignored = _caching_options()
+    enabled, listed = _caching_options()
     if enabled
-        ignored = Set(Symbol.(ignored))
+        ignored = Set(Symbol.(listed))
         function before(ex)
             if Meta.isexpr(ex, (:function, :call, :macrocall, :struct, :module))
                 return false
@@ -281,13 +283,18 @@ function _transform_ast_cache(expr::Expr)
                     if no_ignored_vars(vars, ignored)
                         callexpr = ex.args[2]
                         if Meta.isexpr(callexpr, :call) && isa(lnn[].file, Symbol)
+                            # Naming the call site and digesting its callee are
+                            # done here, so that a call written inside a loop
+                            # does not repeat them once an iteration.
+                            callee = callexpr.args[1]
                             newfunc = Expr(
                                 :call,
                                 Cached,
-                                callexpr.args[1],
+                                callee,
                                 Expr(:macrocall, Symbol("@__MODULE__"), lnn[]),
                                 String(lnn[].file),
-                                QuoteNode(deepcopy(ex)),
+                                String(something(base_name(callee), :call)),
+                                content_hex(callee),
                             )
                             return Expr(
                                 ex.head,

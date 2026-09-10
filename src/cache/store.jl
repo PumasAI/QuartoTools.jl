@@ -9,6 +9,10 @@ const ENABLED = Ref(true)
 # working directory alone.
 const SITE_FILES = Set{String}()
 
+# Where each call site's results sit, by the file and name of the site. See
+# [`entry_directory`](@ref).
+const ENTRY_DIRECTORIES = Dict{Tuple{String,String},String}()
+
 """
     CallSite
 
@@ -80,6 +84,8 @@ Send cached results to `path` instead of the directory
 """
 function cache_directory!(path::Union{AbstractString,Nothing})
     DIRECTORY[] = path === nothing ? nothing : abspath(path)
+    # Every directory found so far was found under the setting this moves.
+    lock(() -> empty!(ENTRY_DIRECTORIES), ANALYSIS_LOCK)
     return DIRECTORY[]
 end
 
@@ -186,7 +192,12 @@ function prune!(;
     end
 
     found = entry_files(directory === nothing ? managed_directories() : [directory])
-    name === nothing || filter!(pair -> stores_function(first(pair), name), found)
+    if name !== nothing
+        # The name a directory holds the function under is one answer for the
+        # whole sweep, however many entries it walks.
+        component = path_component(name)
+        filter!(pair -> stores_function(first(pair), component), found)
+    end
 
     doomed = Set{String}()
     if age_limit !== nothing
@@ -264,9 +275,10 @@ end
 
 entry_files(directory::AbstractString) = entry_files([directory])
 
-# The results of one function share a directory named after it.
-stores_function(path::AbstractString, name::AbstractString) =
-    basename(dirname(path)) == path_component(name)
+# The results of one function share a directory, named after the function by
+# `path_component`.
+stores_function(path::AbstractString, component::AbstractString) =
+    basename(dirname(path)) == component
 
 # What an entry occupies is its result and the metadata describing it.
 entry_bytes(path::AbstractString) = safe_filesize(path) + safe_filesize(metadata_path(path))
@@ -373,11 +385,11 @@ function closure_digest(@nospecialize(value))
         push!(parts, content_hash(method_statements(m)))
     end
     sort!(parts)
-    context = SHA.SHA2_256_CTX()
+    sink = HashSink()
     for part in parts
-        SHA.update!(context, part)
+        write(sink, part)
     end
-    return bytes2hex(SHA.digest!(context))
+    return bytes2hex(sink_digest(sink))
 end
 
 # A closure a value holds appears in the value's own type, so the types are
@@ -412,9 +424,13 @@ function drop_entry(path::AbstractString)
 end
 
 function check_closures(path::AbstractString, @nospecialize(value))
+    # A value whose type names no closure has nothing to bind to code that
+    # moved on, and asking its type costs a fraction of reading the file beside
+    # it.
+    found = closure_digest(value)
+    isempty(found) && return nothing
     recorded = get(read_metadata(path), "closures", nothing)
     recorded === nothing && return nothing
-    found = closure_digest(value)
     found == recorded ||
         error("the closures $(path) names hold different code than when it was written.")
     return nothing
@@ -438,9 +454,12 @@ function cache_key(
     args::Tuple,
     kws::NamedTuple,
 )
+    # One reading of the project serves the whole call: the digest of it below,
+    # and every tracking decision the dependency walk makes under it.
+    project, stamp = refresh_project!()
     serializer = ContentHashSerializer()
     Serialization.serialize(serializer, string(VERSION))
-    write(serializer.io, project_digest())
+    write(serializer.io, project_digest(project, stamp))
     Serialization.serialize(serializer, site.digest)
     Serialization.serialize(serializer, (module_name(site.mod), site.name))
     write(
@@ -450,34 +469,32 @@ function cache_key(
     Serialization.serialize(serializer, dependencies(public))
     Serialization.serialize(serializer, map(deconstruct, args))
     Serialization.serialize(serializer, map(deconstruct, kws))
-    return bytes2hex(SHA.digest!(serializer.io.ctx))
+    return bytes2hex(sink_digest(serializer.io))
 end
 
 const PROJECT_DIGESTS = Dict{String,Tuple{Float64,Vector{UInt8}}}()
 
 """
-    project_digest() -> Vector{UInt8}
+    project_digest(project, stamp) -> Vector{UInt8}
 
-Digest the active project and its manifest. Code from a package that the
-manifest pins cannot change without this digest changing, which is what lets
-the dependency walk stop at the boundary of tracked code.
+Digest the project and manifest that [`refresh_project!`](@ref) read, from the
+stamp it read them at. Code from a package that the manifest pins cannot change
+without this digest changing, which is what lets the dependency walk stop at
+the boundary of tracked code.
 """
-function project_digest()
-    project = Base.active_project()
+function project_digest(project::Union{AbstractString,Nothing}, stamp::Float64)
     project === nothing && return UInt8[]
-    files = [project, joinpath(dirname(project), "Manifest.toml")]
-    stamp = sum(safe_mtime, files)
     return lock(ANALYSIS_LOCK) do
         cached = get(PROJECT_DIGESTS, project, nothing)
         if cached !== nothing && cached[1] == stamp
             return cached[2]
         end
-        context = SHA.SHA2_256_CTX()
-        for file in files
+        sink = HashSink()
+        for file in (project, manifest_path(project))
             isfile(file) || continue
-            SHA.update!(context, read(file))
+            write(sink, read(file))
         end
-        digest = SHA.digest!(context)
+        digest = sink_digest(sink)
         PROJECT_DIGESTS[project] = (stamp, digest)
         return digest
     end
@@ -495,7 +512,20 @@ end
 # Reading and writing.
 
 entry_path(site::CallSite, key::AbstractString) =
-    joinpath(site_directory(site), path_component(site.name), "$(key).jls")
+    joinpath(entry_directory(site), "$(key).jls")
+
+# The directory holding one call site's results. Both halves are fixed for the
+# site, the directory beside its file and the component naming its function,
+# while finding them costs a `stat` of that file, a read of the environment and
+# a rewrite of the name. The configuration is read at the first call and
+# [`cache_directory!`](@ref) is what moves it afterwards.
+function entry_directory(site::CallSite)
+    return lock(ANALYSIS_LOCK) do
+        get!(ENTRY_DIRECTORIES, (site.file, site.name)) do
+            joinpath(site_directory(site), path_component(site.name))
+        end
+    end
+end
 
 # A definition can be named `+`, and that is not a directory name. Rewriting it
 # alone would put `+` and `*` in one directory, and a sweep confined to either

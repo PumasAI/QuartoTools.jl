@@ -8,23 +8,83 @@
 # loses it whenever what the code does changes. A cached definition's own
 # source is digested as written, and a rename there gives a new key.
 
-struct HashSink <: IO
-    ctx::SHA.SHA2_256_CTX
+const LIBXXHASH = xxHash_jll.libxxhash
+
+# The 128 bit hash the library hands back, halves named as its own struct names
+# them.
+struct XXH128Hash
+    low64::UInt64
+    high64::UInt64
 end
 
-HashSink() = HashSink(SHA.SHA2_256_CTX())
+# An `IO` that digests what is written to it. Every part of a cache key is
+# assembled by writing into one of these, so a key means one thing whichever
+# part of the cache put it together. Bytes reach the library from where they
+# already sit: a cached call hands over whole arguments, and copying one to
+# hash it is the cost the cache exists to avoid.
+mutable struct HashSink <: IO
+    state::Ptr{Cvoid}
+
+    function HashSink()
+        state = ccall((:XXH3_createState, LIBXXHASH), Ptr{Cvoid}, ())
+        ccall((:XXH3_128bits_reset, LIBXXHASH), Cint, (Ptr{Cvoid},), state)
+        sink = new(state)
+        finalizer(free_state!, sink)
+        return sink
+    end
+end
+
+free_state!(sink::HashSink) =
+    ccall((:XXH3_freeState, LIBXXHASH), Cint, (Ptr{Cvoid},), sink.state)
 
 Base.isreadable(::HashSink) = false
 Base.iswritable(::HashSink) = true
 
-function Base.write(sink::HashSink, byte::UInt8)
-    SHA.update!(sink.ctx, (byte,))
+@inline function update!(sink::HashSink, ptr::Ptr{UInt8}, nbytes::UInt)
+    ccall(
+        (:XXH3_128bits_update, LIBXXHASH),
+        Cint,
+        (Ptr{Cvoid}, Ptr{UInt8}, Csize_t),
+        sink.state,
+        ptr,
+        nbytes,
+    )
+    return nothing
+end
+
+@inline function Base.write(sink::HashSink, byte::UInt8)
+    # The byte is handed over where it stands. `Serialization` writes tags a
+    # byte at a time, so this runs once per tag and must not allocate.
+    holder = Ref(byte)
+    GC.@preserve holder update!(sink, Base.unsafe_convert(Ptr{UInt8}, holder), UInt(1))
     return 1
 end
 
-function Base.unsafe_write(sink::HashSink, ptr::Ptr{UInt8}, nbytes::UInt)
-    SHA.update!(sink.ctx, unsafe_wrap(Array, ptr, nbytes))
+@inline function Base.unsafe_write(sink::HashSink, ptr::Ptr{UInt8}, nbytes::UInt)
+    update!(sink, ptr, nbytes)
     return Int(nbytes)
+end
+
+"""
+    sink_digest(sink::HashSink) -> Vector{UInt8}
+
+The 16 bytes digesting everything written to `sink`.
+
+The two halves of the hash are laid down in the library's canonical order: the
+high half first, each half most significant byte first. Every XXH3
+implementation writes those bytes in that order, so a digest taken here says
+the same thing as a digest taken anywhere else, on a machine of either
+endianness.
+"""
+function sink_digest(sink::HashSink)
+    hash = ccall((:XXH3_128bits_digest, LIBXXHASH), XXH128Hash, (Ptr{Cvoid},), sink.state)
+    digest = Vector{UInt8}(undef, 16)
+    for (offset, half) in ((0, hash.high64), (8, hash.low64))
+        for i = 1:8
+            digest[offset+i] = (half >> (8 * (8 - i))) % UInt8
+        end
+    end
+    return digest
 end
 
 struct ContentHashSerializer <: Serialization.AbstractSerializer
@@ -77,7 +137,7 @@ Values that cannot be serialized throw; a cache key is never guessed.
 function content_hash(@nospecialize(value))
     serializer = ContentHashSerializer()
     Serialization.serialize(serializer, deconstruct(value))
-    return SHA.digest!(serializer.io.ctx)
+    return sink_digest(serializer.io)
 end
 
 """
@@ -206,10 +266,12 @@ function Serialization.serialize(s::ContentHashSerializer, m::Method)
     if !is_generated_name(m.name)
         write(s.io, content_hash(m.name))
     end
-    write(s.io, content_hash(m.nargs))
-    write(s.io, content_hash(m.isva))
+    # A count and a flag hold nothing that a later part could point back at, so
+    # they go into the stream as they stand.
+    Serialization.serialize(s, m.nargs)
+    Serialization.serialize(s, m.isva)
     write(s.io, content_hash(argument_types(m)))
-    if is_tracked(m.module)
+    if tracked(m.module)
         write(s.io, content_hash(method_statements(m)))
     end
     return nothing
@@ -343,13 +405,55 @@ digested on its own and the digests are sorted, so a set found in one order
 here and another order there still digests alike.
 """
 function combined_digest(values)
-    parts = Vector{UInt8}[content_hash(value) for value in values]
+    parts = Vector{UInt8}[part_digest(value) for value in values]
     sort!(parts)
-    context = SHA.SHA2_256_CTX()
+    sink = HashSink()
     for part in parts
-        SHA.update!(context, part)
+        write(sink, part)
     end
-    return SHA.digest!(context)
+    return sink_digest(sink)
+end
+
+"""
+    evict_half!(memo::AbstractDict, cap::Integer)
+
+Drop half of `memo` once it holds more than `cap` entries.
+
+A memo answers the question it holds for nothing, so emptying one hands a
+session's work back to be done again. Half of it goes instead, and the entries
+sit in no order worth choosing by, so the half the iteration reaches first is
+the half that goes.
+"""
+function evict_half!(memo::AbstractDict, cap::Integer)
+    length(memo) > cap || return nothing
+    # Collected first: a dictionary cannot be walked while it is being deleted
+    # from.
+    for key in collect(Iterators.take(keys(memo), length(memo) ÷ 2))
+        delete!(memo, key)
+    end
+    return nothing
+end
+
+const METHOD_DIGESTS = IdDict{Method,Vector{UInt8}}()
+
+# One entry per method the walk has digested, which a long session keeps adding
+# to. Cap it the way the memos in `edges.jl` are capped.
+const MAX_METHOD_DIGESTS = 100_000
+
+part_digest(@nospecialize(value)) = content_hash(value)
+
+# A method's lowered code cannot change: a redefinition writes a method of its
+# own and leaves this one where it stands. So the digest outlives a world age,
+# and one definition made in a session costs no rehashing of every method every
+# cached call reaches. What the digest also carries is whether the method's
+# module is tracked, which `forget_analysis!` is what moves.
+function part_digest(m::Method)
+    cached = get(METHOD_DIGESTS, m, nothing)
+    cached === nothing || return cached
+    digest = content_hash(m)
+    evict_half!(METHOD_DIGESTS, MAX_METHOD_DIGESTS)
+    METHOD_DIGESTS[m] = digest
+    return digest
 end
 
 # A callable's content is the values it captures plus the code of its own

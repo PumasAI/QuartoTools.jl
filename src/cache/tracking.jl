@@ -9,7 +9,8 @@
 
 # A cached call can be made from any task, and the memos that make the walk
 # cheap are one per process: the tracking decisions below, the analyses and
-# resolutions in `edges.jl`, and the project digests in `store.jl`. Every entry
+# resolutions in `edges.jl`, the method digests in `hashing.jl`, and the
+# project digests in `store.jl`. Every entry
 # point that reads or writes one holds this, which serialises the walk itself.
 # Running one is what a cache hit exists to avoid, so two tasks waiting on each
 # other here cost less than the walk either of them would otherwise repeat.
@@ -30,6 +31,21 @@ source lies outside the read-only parts of the depot. Defaults to `false` for
 manager. Use [`track!`](@ref) and [`untrack!`](@ref) to override.
 """
 function is_tracked(mod::Module)
+    refresh_project!()
+    return tracked(mod)
+end
+
+"""
+    tracked(mod::Module) -> Bool
+
+[`is_tracked`](@ref) answered from the memos alone, without a reading of the
+project.
+
+A walk asks this of every method, type and global it meets, several hundred
+times over. The one reading that keeps the memos current is taken by whatever
+starts the walk.
+"""
+function tracked(mod::Module)
     return lock(ANALYSIS_LOCK) do
         # An override on a submodule wins over one on its parent, so that a
         # single vendored submodule can be excluded without excluding
@@ -43,12 +59,12 @@ function is_tracked(mod::Module)
             scope = parent
         end
         holds_rebuilt_types(mod) && return true
-        # Reading the project comes before the memo is consulted, since a
-        # project that has changed drops every decision taken under the one
-        # before it.
-        uuids = active_project_uuids()
         root = Base.moduleroot(mod)
-        return get!(() -> tracked_by_default(root, uuids), TRACK_RESULTS, root)
+        return get!(
+            () -> tracked_by_default(root, active_project_uuids()),
+            TRACK_RESULTS,
+            root,
+        )
     end
 end
 
@@ -165,26 +181,50 @@ end
 
 const PROJECT_UUIDS = Dict{String,Tuple{Float64,Union{Set{Base.UUID},Nothing}}}()
 
-# Read afresh whenever either file is touched, so that adding a dependency
-# mid-session moves the boundary with it.
-function active_project_uuids()
+"""
+    refresh_project!() -> (project, stamp)
+
+Take a reading of the active project, dropping every decision taken under the
+project as it stood whenever the reading has moved. Adding a dependency
+mid-session moves the boundary with it.
+
+A reading costs a walk of the load path and two `stat` calls, so a cached call
+takes one and every decision under it answers from the memos that reading
+leaves current. The path and the stamp come back for a caller keying a memo of
+its own on the same reading.
+"""
+function refresh_project!()
     project = Base.active_project()
-    project === nothing && return nothing
-    manifest = joinpath(dirname(project), "Manifest.toml")
+    project === nothing && return (nothing, 0.0)
+    manifest = manifest_path(project)
     stamp = safe_mtime(project) + safe_mtime(manifest)
-    return lock(ANALYSIS_LOCK) do
+    lock(ANALYSIS_LOCK) do
         cached = get(PROJECT_UUIDS, project, nothing)
-        cached === nothing || cached[1] == stamp || (cached = nothing)
-        if cached === nothing
+        if cached === nothing || cached[1] != stamp
             # Which packages belong is what the boundary is drawn from, so
             # every decision taken under the project as it stood goes too.
             empty!(TRACK_RESULTS)
             forget_analysis!()
-            cached = (stamp, read_project_uuids(project, manifest))
-            PROJECT_UUIDS[project] = cached
+            PROJECT_UUIDS[project] = (stamp, read_project_uuids(project, manifest))
         end
-        return cached[2]
     end
+    return (project, stamp)
+end
+
+manifest_path(project::AbstractString) = joinpath(dirname(project), "Manifest.toml")
+
+# The packages the last reading found. A module asked about before any reading
+# was taken takes one of its own, which is what a call to `is_tracked` from
+# outside a cached call does.
+function active_project_uuids()
+    project = Base.active_project()
+    project === nothing && return nothing
+    cached = get(PROJECT_UUIDS, project, nothing)
+    cached === nothing || return cached[2]
+    manifest = manifest_path(project)
+    uuids = read_project_uuids(project, manifest)
+    PROJECT_UUIDS[project] = (safe_mtime(project) + safe_mtime(manifest), uuids)
+    return uuids
 end
 
 function read_project_uuids(project::AbstractString, manifest::AbstractString)

@@ -54,7 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Entries are stored as `<function>/<key>.jls` with their metadata beside them,
   and an entry's modification time records its last use
 - Every entry written by an earlier version misses once, since the hash and the
-  layout both changed. Those entries are left in place rather than swept
+  layout both changed. A key digests with XXH3-128, where it digested with
+  SHA-256 before, and reads the bytes of an argument some fifty times faster.
+  Those entries are left in place rather than swept
 - A call to a function `cacheable` returns `false` for runs uncached. It raised
   `Cannot cache function call` before
 - `serialize` writes the `Serialization` header when called inside a notebook,

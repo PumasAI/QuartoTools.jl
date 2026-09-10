@@ -149,7 +149,7 @@ end
         a = QuartoTools.dependency_digest(Chain.outer, Tuple{Int})
         b = QuartoTools.dependency_digest(Chain.outer, Tuple{Int})
         @test a == b
-        @test length(a) == 32
+        @test length(a) == 16
     end
 
     @testset "a change anywhere in the chain invalidates" begin

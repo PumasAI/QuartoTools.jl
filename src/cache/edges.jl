@@ -51,36 +51,46 @@ anywhere recomputes it and nothing else does.
 """
 function reachable_definitions(@nospecialize(f), @nospecialize(argtypes::Type))
     return lock(ANALYSIS_LOCK) do
-        world = Base.get_world_counter()
-        if ANALYSED_WORLD[] != world
-            # Whether a definition changed is unknown, so every analysis is
-            # recomputed on demand. `resolve` makes that cheap for the ones
-            # whose closure held still.
-            empty!(ANALYSES)
-            empty!(TRACKED_CALLABLES)
-            ANALYSED_WORLD[] = world
-        end
-        # What a call reaches follows from the type of the callable, so every
-        # instance of one closure type shares an answer.
-        return get!(() -> analyse(f, argtypes), ANALYSES, (Core.Typeof(f), argtypes))
+        # The reading the walk below runs under. A cached call takes its own
+        # before it starts and reaches the walk through `memoised_analysis`.
+        refresh_project!()
+        return memoised_analysis(f, argtypes)
     end
+end
+
+# The analysis, taking the tracking decisions the walk makes from the memos as
+# they stand. Callers hold `ANALYSIS_LOCK` and have read the project.
+function memoised_analysis(@nospecialize(f), @nospecialize(argtypes::Type))
+    world = Base.get_world_counter()
+    if ANALYSED_WORLD[] != world
+        # Whether a definition changed is unknown, so every analysis is
+        # recomputed on demand. `resolve` makes that cheap for the ones whose
+        # closure held still.
+        empty!(ANALYSES)
+        empty!(TRACKED_CALLABLES)
+        ANALYSED_WORLD[] = world
+    end
+    # What a call reaches follows from the type of the callable, so every
+    # instance of one closure type shares an answer.
+    return get!(() -> analyse(f, argtypes), ANALYSES, (Core.Typeof(f), argtypes))
 end
 
 """
     dependency_digest(f, argtypes::Type{<:Tuple}) -> Vector{UInt8}
 
 Digest every definition that calling `f` with `argtypes` depends on, together
-with the current values of the globals it reads.
+with the current values of the globals it reads. Runs under the reading of the
+project that [`cache_key`](@ref) takes.
 """
 function dependency_digest(@nospecialize(f), @nospecialize(argtypes::Type))
-    definitions = reachable_definitions(f, argtypes)
+    definitions = lock(() -> memoised_analysis(f, argtypes), ANALYSIS_LOCK)
     serializer = ContentHashSerializer()
     write(serializer.io, definitions.digest)
     for ref in definitions.globals
         Serialization.serialize(serializer, (module_name(ref.mod), ref.name))
         write(serializer.io, global_digest(ref))
     end
-    return SHA.digest!(serializer.io.ctx)
+    return sink_digest(serializer.io)
 end
 
 """
@@ -142,6 +152,7 @@ end
 function forget_analysis!()
     lock(ANALYSIS_LOCK) do
         empty!(ANALYSES)
+        empty!(METHOD_DIGESTS)
         empty!(RESOLUTIONS)
         empty!(TRACKED_CALLABLES)
         empty!(TRACKED_SIGNATURES)
@@ -176,8 +187,8 @@ function analyse(@nospecialize(f), @nospecialize(argtypes::Type))
         scan_method!(walk, pop!(walk.pending))
     end
 
-    methods = sort!(collect(walk.methods); by = method_sort_key)
-    types = sort!(collect(walk.types); by = string)
+    methods = sorted_by(collect(walk.methods), method_sort_key)
+    types = sorted_by(collect(walk.types), string)
     globals = sort!(
         collect(walk.globals);
         by = ref -> (string(module_name(ref.mod)), String(ref.name)),
@@ -185,18 +196,25 @@ function analyse(@nospecialize(f), @nospecialize(argtypes::Type))
     return Definitions(methods, types, globals, structural_digest(methods, types))
 end
 
+# Ordering by a key function calls it on every comparison, and both keys the
+# walk orders by print a name. Each element yields its key once here, and the
+# positions are what gets ordered.
+function sorted_by(values::Vector, key)
+    return values[sortperm(map(key, values))]
+end
+
 function structural_digest(methods::Vector{Method}, types::Vector{Any})
-    context = SHA.SHA2_256_CTX()
-    SHA.update!(context, combined_digest(methods))
-    SHA.update!(context, combined_digest(types))
-    return SHA.digest!(context)
+    sink = HashSink()
+    write(sink, combined_digest(methods))
+    write(sink, combined_digest(types))
+    return sink_digest(sink)
 end
 
 
 # Growing the set.
 
 function push_method!(walk::Walk, m::Method)
-    is_tracked(m.module) || return nothing
+    tracked(m.module) || return nothing
     m in walk.methods && return nothing
     push!(walk.methods, m)
     push!(walk.pending, m)
@@ -222,14 +240,14 @@ const TRACKED_CALLABLES = Dict{Any,Vector{Method}}()
 # it.
 function tracked_callable_methods(@nospecialize(T::Type))
     return get!(TRACKED_CALLABLES, T) do
-        filter(m -> is_tracked(m.module), callable_methods(T))
+        filter(m -> tracked(m.module), callable_methods(T))
     end
 end
 
 function push_type!(walk::Walk, @nospecialize(T::Type))
     named = Base.unwrap_unionall(T)
     named isa DataType || return nothing
-    is_tracked(named.name.module) || return nothing
+    tracked(named.name.module) || return nothing
     push!(walk.types, T)
     # Constructors are methods of `Type{T}`, and changing one changes what a
     # call to it produces.
@@ -289,7 +307,7 @@ function scan_global!(walk::Walk, ref::GlobalRef)
         # A foreign function is followed too, since a method added to it from
         # tracked code is tracked code.
         scan_value!(walk, value)
-    elseif is_tracked(owner)
+    elseif tracked(owner)
         # Plain data. Its name is in the code, its value is not, so the value
         # has to be read again on every call.
         binding = GlobalRef(owner, ref.name)
@@ -412,7 +430,7 @@ function resolve(@nospecialize(signature))
             collect_signatures!(callees, code)
         end
     end
-    length(RESOLUTIONS) > MAX_RESOLUTIONS && empty!(RESOLUTIONS)
+    evict_half!(RESOLUTIONS, MAX_RESOLUTIONS)
     resolution = Resolution(methods, callees)
     RESOLUTIONS[signature] = resolution
     return resolution
@@ -526,14 +544,14 @@ function mentions_tracked(@nospecialize(T))
     cached = get(TRACKED_SIGNATURES, T, nothing)
     cached === nothing || return cached
     result = compute_mentions_tracked(T)
-    length(TRACKED_SIGNATURES) > MAX_TRACKED_SIGNATURES && empty!(TRACKED_SIGNATURES)
+    evict_half!(TRACKED_SIGNATURES, MAX_TRACKED_SIGNATURES)
     TRACKED_SIGNATURES[T] = result
     return result
 end
 
 function compute_mentions_tracked(@nospecialize(T))
     if T isa DataType
-        is_tracked(T.name.module) && return true
+        tracked(T.name.module) && return true
         return any(mentions_tracked, T.parameters)
     elseif T isa UnionAll
         return mentions_tracked(T.body)

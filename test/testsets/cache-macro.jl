@@ -241,7 +241,7 @@ end
 
             entry = only(QuartoTools.entries())
             metadata = TOML.parsefile(QuartoTools.metadata_path(entry.path))
-            metadata["closures"] = repeat("0", 64)
+            metadata["closures"] = repeat("0", 32)
             open(
                 io -> TOML.print(io, metadata; sorted = true),
                 QuartoTools.metadata_path(entry.path),

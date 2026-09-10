@@ -58,6 +58,18 @@ end
         end
     end
 
+    @testset "an override reaches a definition that has already run" begin
+        with_cache_directory() do directory
+            reading(1)
+            @test length(stored_files(directory)) == 1
+            mktempdir() do moved
+                QuartoTools.cache_directory!(moved)
+                reading(1)
+                @test length(stored_files(moved)) == 1
+            end
+        end
+    end
+
     @testset "the default sits beside the file holding the definition" begin
         site = QuartoTools.CallSite("f", @__MODULE__, @__FILE__, "digest")
         @test QuartoTools.site_directory(site) == joinpath(@__DIR__, ".cache")

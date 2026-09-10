@@ -13,6 +13,29 @@ struct Point
     y::Int
 end
 
+const LIBXXHASH = QuartoTools.LIBXXHASH
+
+# What the library makes of these bytes on its own: one call, no streaming, and
+# the canonical form written by the library instead of assembled here.
+function canonical_digest(bytes::Vector{UInt8})
+    hash = ccall(
+        (:XXH3_128bits, LIBXXHASH),
+        QuartoTools.XXH128Hash,
+        (Ptr{UInt8}, Csize_t),
+        bytes,
+        length(bytes),
+    )
+    canonical = Vector{UInt8}(undef, 16)
+    ccall(
+        (:XXH128_canonicalFromHash, LIBXXHASH),
+        Cvoid,
+        (Ptr{UInt8}, QuartoTools.XXH128Hash),
+        canonical,
+        hash,
+    )
+    return canonical
+end
+
 @testset "content_hash" begin
     @testset "equal values hash equal" begin
         @test QuartoTools.content_hash([1, 2, 3]) == QuartoTools.content_hash([1, 2, 3])
@@ -51,9 +74,30 @@ end
 
     @testset "hex digest" begin
         h = QuartoTools.content_hex(Point(3, 4))
-        @test length(h) == 64
+        @test length(h) == 32
         @test all(isxdigit, h)
         @test h == QuartoTools.content_hex(Point(3, 4))
+    end
+
+    # Laying the two halves of the hash down in the wrong order leaves every
+    # digest agreeing with every other digest taken here, and with nothing
+    # taken anywhere else. Pinning the layout against the library is what says
+    # which order the bytes go in.
+    @testset "a digest is the canonical form of what was written" begin
+        message = Vector{UInt8}("the quick brown fox")
+        expected = canonical_digest(message)
+
+        at_once = QuartoTools.HashSink()
+        write(at_once, message)
+
+        byte_by_byte = QuartoTools.HashSink()
+        for byte in message
+            write(byte_by_byte, byte)
+        end
+
+        @test length(expected) == 16
+        @test QuartoTools.sink_digest(at_once) == expected
+        @test QuartoTools.sink_digest(byte_by_byte) == expected
     end
 
     @testset "types hash on their shape" begin
@@ -90,6 +134,21 @@ end
               QuartoTools.content_hash(Dict(Symbol("k#2") => 1))
         @test QuartoTools.content_hash(NamedTuple{(Symbol("c#1"),)}((1,))) !=
               QuartoTools.content_hash(NamedTuple{(Symbol("c#2"),)}((1,)))
+    end
+
+    # A method's digest says whether its module is tracked, and its lowered
+    # code is only written when it is. Moving the boundary has to reach the
+    # digest, whatever it is kept in.
+    @testset "moving the tracking boundary changes a method digest" begin
+        m = only(methods(make_adder_a))
+        inside = QuartoTools.combined_digest([m])
+        QuartoTools.untrack!(@__MODULE__)
+        try
+            @test QuartoTools.combined_digest([m]) != inside
+        finally
+            QuartoTools.reset_tracking!()
+        end
+        @test QuartoTools.combined_digest([m]) == inside
     end
 
     @testset "a name lowering invented loses its counters" begin
@@ -146,6 +205,18 @@ end
     @test answered == "true"
 end
 
+@testset "a memo at its cap keeps half of what it holds" begin
+    memo = Dict(index => index for index = 1:10)
+    QuartoTools.evict_half!(memo, 10)
+    @test length(memo) == 10
+
+    memo[11] = 11
+    QuartoTools.evict_half!(memo, 10)
+    @test length(memo) == 6
+    # What is left is still an answer to the question it was stored under.
+    @test all(pair -> first(pair) == last(pair), memo)
+end
+
 @testset "cross-process determinism" begin
     script = """
     import QuartoTools
@@ -168,7 +239,7 @@ end
     b = digest("Int")
     c = digest("Float64")
 
-    @test length(a) == 64
+    @test length(a) == 32
     # Identical definitions in separate processes agree.
     @test a == b
     # A changed field type changes the digest.
