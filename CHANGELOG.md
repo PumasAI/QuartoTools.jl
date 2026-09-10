@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- `@cache` takes a function definition and a callable-object definition, not
+  only a call site
+- `entries`, `usage` and `drop!` report on a cache directory and delete single
+  entries, and `prune!` sweeps by age, count, total size or function name.
+  Given no directory, all four cover every directory `managed_directories`
+  names: the working directory's, and the one beside each cached definition
+  loaded so far. `entries` returns an `EntryList` and `usage` a `UsageList`,
+  each behaving as the vector it holds and displaying as a table whose result
+  column is fitted to the terminal
+- `track!`, `untrack!` and `is_tracked` move the boundary the dependency walk
+  stops at, `dependencies` folds in a dependency the walk cannot see, and
+  `ignore_global!` exempts a global from per-call hashing
+- `cache_directory!`, `disable!`, and the `QUARTOTOOLS_CACHE_DIRECTORY` and
+  `QUARTOTOOLS_CACHE_DISABLE` environment variables
+- A docstring written above a `@cache` definition documents it
+
+### Changed
+
+- A cache key covers every tracked definition a call depends on at any depth,
+  so editing a function the cached call reaches invalidates that entry. A key
+  previously covered the called function's own lowered code and nothing below it
+- The dependency walk stops at a package the active project does not depend on,
+  so a development tool loaded from a shared environment stays out of cache
+  keys even when cached code reaches it through `stdout`. `track!` includes one
+  again
+- A global whose value cannot be serialised keys on its type and warns, naming
+  the global. Such a value previously cost the call its key, and with it the
+  cache
+- A keyword call depends on its callee alone. Every keyword method in a session
+  shares one table, and reading it made a call depend on every function that
+  takes keywords, wherever it was defined
+- A method a later definition replaced takes no part in a key, so a function
+  edited and then returned to what it said reads the result stored the first
+  time round
+- A definition whose name no directory can hold, `+` being one, stores under a
+  name carrying a digest of its own, so a sweep confined to one such function
+  no longer takes another's results with it
+- Reading an entry never fails a call. One that cannot be read, or whose value
+  would bind to closures holding different code than when it was written, is
+  dropped and the call runs in its place
+- `storage_module` and `runtime_module` hold the mapping between a notebook's
+  module and `Main`, and either can be overridden for another pair of modules
+- Entries are stored as `<function>/<key>.jls` with their metadata beside them,
+  and an entry's modification time records its last use
+- Every entry written by an earlier version misses once, since the hash and the
+  layout both changed. A key digests with XXH3-128, where it digested with
+  SHA-256 before, and reads the bytes of an argument some fifty times faster.
+  Those entries are left in place rather than swept
+- A call to a function `cacheable` returns `false` for runs uncached. It raised
+  `Cannot cache function call` before
+- `serialize` writes the `Serialization` header when called inside a notebook,
+  so a file it writes carries the format version of the Julia that wrote it
+
 ## [v1.1.2] - 2026-03-17
 
 ### Fixed

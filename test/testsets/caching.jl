@@ -12,8 +12,11 @@
     sum2 = QuartoTools.@cache sum(result2)
     @test sum1 == sum2
 
+    # Each cached function has a directory of its own, holding a result and the
+    # metadata beside it.
     cache_files = readdir(cache_dir)
-    @test length(cache_files) == 6
+    @test sort(cache_files) == ["dependencies", "rand", "sum"]
+    @test length(QuartoTools.entries(cache_dir)) == 3
 
     deps2 = QuartoTools.@cache Pkg.dependencies()
 

@@ -124,6 +124,107 @@ The cache for each notebook is stored alongside it in a folder called `.cache`.
 Removing this folder will clear the cache for the notebook. Do not commit the
 contents of this folder to version control.
 
+### What a cache key covers
+
+A cached call digests six things, and a change to any of them means the call
+runs again:
+
+1. The full `VERSION` of Julia.
+2. The active `Project.toml` and `Manifest.toml`.
+3. The source of the definition or call site itself.
+4. Every tracked definition the call depends on, however deep: their lowered
+   code, and the structure of the types they refer to.
+5. The current values of the tracked globals that code reads.
+6. The arguments and keyword arguments.
+
+Point 4 is what ordinary memoisation lacks. `QuartoTools` walks out from the
+call to the methods it dispatches to, then to the methods those call, to a
+fixpoint. Editing a function three calls below the one you cached invalidates
+that entry and leaves every other entry alone.
+
+The walk digests lowered code, so a change below the cached definition that
+leaves behaviour alone leaves a stored result valid: a renamed local variable,
+an added comment, a definition moved down a file. Changing what that code does
+never does.
+
+The cached definition's own source is digested as written, so editing it
+invalidates the entry. Renaming one of its local variables counts as an edit.
+
+### Where the walk stops
+
+Walking everything a call can reach would mean walking most of `Base`, so the
+walk stops at code that cannot change while the manifest holds still: `Base`,
+`Core`, the standard libraries, and packages the package manager installed.
+Everything else is walked, which covers `Main`, notebooks, scripts, modules
+built at runtime, and packages checked out with `Pkg.develop`. Move that
+boundary with [`QuartoTools.track!`](@ref) and
+[`QuartoTools.untrack!`](@ref), and ask where it sits with
+[`QuartoTools.is_tracked`](@ref).
+
+Two things the walk cannot see, both covered by
+[`QuartoTools.dependencies`](@ref): a callable reached with no lexical mention
+and no inferable path, and state outside the process, such as a data file or a
+database.
+
+### Caching a function rather than a call
+
+`@cache` also takes a definition, in which case every call to that function is
+cached, and a definition of a callable object, in which case the object takes
+part in the key:
+
+```julia
+QuartoTools.@cache function summarise(rows, passes = 1000)
+    return expensive(rows, passes)
+end
+
+QuartoTools.@cache function (counter::Counter)(rows)
+    return expensive(counter, rows)
+end
+```
+
+### Managing what is stored
+
+Nothing prunes on its own, so a cache directory grows until something sweeps
+it. [`QuartoTools.usage`](@ref) says which function is worth sweeping,
+[`QuartoTools.entries`](@ref) lists the individual results, and
+[`QuartoTools.drop!`](@ref) deletes one:
+
+```julia
+julia> QuartoTools.usage()
+function    entries      bytes  oldest use        newest use
+summarise         2  1.358 GiB  2026-08-30 09:14  2026-09-09 11:02
+load_table        1  8.000 MiB  2026-09-08 16:40  2026-09-08 16:40
+
+julia> QuartoTools.drop!(last(QuartoTools.entries()))
+true
+```
+
+A definition caches beside its own file, which need not be the directory you
+are working in, so all four cover the working directory's `.cache` and the one
+beside every cached definition loaded so far. Ask
+[`QuartoTools.managed_directories`](@ref) which those are, or pass a directory
+to confine any of them to one.
+
+[`QuartoTools.prune!`](@ref) sweeps by age, count, total size, or one
+function's name, and [`QuartoTools.clear!`](@ref) drops everything. Every
+criterion given applies, so a sweep drops an entry as soon as one of them
+condemns it. Name none of the three and the sweep drops what has gone unused
+for thirty days:
+
+```julia
+QuartoTools.prune!(; older_than = Dates.Day(7))
+QuartoTools.prune!(; keep = 500)
+QuartoTools.prune!(; max_size = 5 * 1024^3)
+QuartoTools.prune!(; name = "summarise")
+QuartoTools.clear!()
+```
+
+[`QuartoTools.cache_directory!`](@ref) sends entries somewhere other than the
+`.cache` folder beside the notebook, and [`QuartoTools.disable!`](@ref) runs
+every call and stores nothing. `QUARTOTOOLS_CACHE_DIRECTORY` and
+`QUARTOTOOLS_CACHE_DISABLE=1` set both for a whole session without editing
+code.
+
 ## Serialization
 
 When working with serialized data in Quarto notebooks users must use the

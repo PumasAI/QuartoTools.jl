@@ -3,6 +3,7 @@ module QuartoTools
 # Imports.
 
 import Dates
+import MacroTools
 import Pkg
 import Preferences
 import REPL
@@ -10,6 +11,7 @@ import Requires
 import SHA
 import Serialization
 import TOML
+import xxHash_jll
 
 
 # Exports.
@@ -60,10 +62,7 @@ function Base.getproperty(q::QuartoSerializer, name::Symbol)
 end
 
 function Serialization.serialize(q::QuartoSerializer, m::Module)
-    if fullname(m) === (:Main, :Notebook)
-        m = Main
-    end
-    return Serialization.serialize(q.__serializer__, m)
+    return Serialization.serialize(q.__serializer__, storage_module(m))
 end
 
 """
@@ -80,6 +79,12 @@ function serialize(s::IO, x)
     x = deconstruct(x)
     if is_quarto_notebook()
         q = QuartoSerializer(Serialization.Serializer(s))
+        # `Serialization` writes its header from the entry point that builds
+        # the serializer itself, which a serializer of ours does not go
+        # through. Both sides read a stream back with or without it, and a
+        # stream carrying it can be told from a file that holds something
+        # else.
+        Serialization.writeheader(q.__serializer__)
         return Serialization.serialize(q, x)
     else
         @debug "Falling back to default serialization. Not a Quarto notebook."
@@ -89,13 +94,7 @@ end
 serialize(filename::AbstractString, x) = open(io -> serialize(io, x), filename, "w")
 
 function Serialization.deserialize_module(q::QuartoSerializer)
-    real_module = Serialization.deserialize_module(q.__serializer__)
-    if real_module === Main
-        mod = _notebook_module()
-        mod !== nothing && return mod
-        isdefined(Main, :Notebook) && isa(Main.Notebook, Module) && return Main.Notebook
-    end
-    return real_module
+    return runtime_module(Serialization.deserialize_module(q.__serializer__))
 end
 
 """
@@ -121,119 +120,45 @@ end
 deserialize(filename::AbstractString) = open(deserialize, filename)
 
 
-# Content Hashing.
+# Content hashing, and the definitions a cached call depends on.
+#
+# A key covers the code a call reaches, not just the function it names, so
+# these carry the walk out to the methods a call can dispatch to, the boundary
+# it stops at, and the hashing that turns all of it into bytes.
 
-"""
-    content_hash(object)
-
-Compute a content hash for the given object. This should result in hashes that
-match between different instances of identical objects. Used for cache keys.
-"""
-function content_hash(@nospecialize(object))
-    serializer = ContentHashSerializer()
-    Serialization.serialize(serializer, object)
-    return SHA.digest!(serializer.io.ctx)
-end
-
-struct HashContext <: IO
-    ctx::SHA.SHA1_CTX
-end
-
-function Base.unsafe_write(io::HashContext, ptr::Ptr{UInt8}, nb::UInt)
-    for _ = 1:nb
-        SHA.update!(io.ctx, (unsafe_load(ptr),))
-        ptr += 1
-    end
-    return nb
-end
-Base.write(io::HashContext, u::UInt8) = SHA.update!(io.ctx, (u,))
-
-struct ContentHashSerializer <: Serialization.AbstractSerializer
-    io::HashContext
-    __serializer__::Serialization.Serializer
-
-    function ContentHashSerializer()
-        serializer = Serialization.Serializer(IOBuffer())
-        io = HashContext(SHA.SHA1_CTX())
-        return new(io, serializer)
-    end
-end
-
-function Base.setproperty!(q::ContentHashSerializer, name::Symbol, value)
-    if name in (:io, :__serializer__)
-        return setfield!(q, name, value)
-    else
-        return Base.setproperty!(getfield(q, :__serializer__), name, value)
-    end
-end
-
-function Base.getproperty(q::ContentHashSerializer, name::Symbol)
-    if name in (:io, :__serializer__)
-        return getfield(q, name)
-    else
-        return getproperty(getfield(q, :__serializer__), name)
-    end
-end
-
-function Serialization.serialize(cs::ContentHashSerializer, f::Function)
-    name = String(nameof(f))
-    if startswith(name, "#")
-        for each in code_lowered(f)
-            Serialization.serialize(cs, each.code)
-        end
-    else
-        invoke(
-            Serialization.serialize,
-            Tuple{Serialization.AbstractSerializer,Function},
-            cs,
-            f,
-        )
-    end
-end
-
-Serialization.serialize(::ContentHashSerializer, ::Core.LineInfoNode) = nothing
-Serialization.serialize(::ContentHashSerializer, ::LineNumberNode) = nothing
-
-function Serialization.serialize(cs::ContentHashSerializer, tn::Core.TypeName)
-    if !Serialization.serialize_cycle(cs, tn)
-        if startswith(String(tn.name), '#')
-            obj = getfield(tn.module, tn.name)
-            if isdefined(obj, :instance)
-                for ci in code_lowered(obj.instance)
-                    Serialization.serialize(cs, ci.code)
-                end
-                return nothing
-            end
-        else
-            Serialization.writetag(cs.io, Serialization.TYPENAME_TAG)
-            Serialization.write(cs.io, Serialization.object_number(cs, tn))
-            Serialization.serialize_typename(cs, tn)
-        end
-    end
-    return nothing
-end
-
-function Serialization.serialize(cs::ContentHashSerializer, s::Symbol)
-    str = String(s)
-    stripped_s = contains(str, '#') ? Symbol(filter(!isdigit, str)) : s
-    return invoke(
-        Serialization.serialize,
-        Tuple{Serialization.AbstractSerializer,Symbol},
-        cs,
-        stripped_s,
-    )
-end
+include("cache/compat.jl")
+include("cache/modules.jl")
+include("cache/tracking.jl")
+include("cache/hashing.jl")
+include("cache/edges.jl")
 
 
 # Caching.
 
+include("cache/store.jl")
+include("cache/inspection.jl")
+
+"""
+    Cached(f, mod, file, name, digest)
+
+A function paired with where it was called from, so that calling it consults
+the cache. [`@cache`](@ref) and the cell transform both build one of these.
+"""
 struct Cached{F}
     f::F
-    mod::Module
-    file::String
-    project::String
-    expr::Expr
+    site::CallSite
 end
+
+# The name a result is stored under and the digest of the callee it came from
+# are worked out by whatever builds the call, since the module a cell runs in
+# is the only part of a site that the cell itself knows.
+Cached(
+    @nospecialize(f),
+    mod::Module,
+    file::AbstractString,
+    name::AbstractString,
+    digest::AbstractString,
+) = Cached{Core.Typeof(f)}(f, CallSite(name, mod, file, digest))
 
 """
     deconstruct(value::T) -> S
@@ -264,143 +189,24 @@ QuartoTools.cacheable(::typeof(Base.read)) = false
 """
 cacheable(f) = true
 
+"""
+    dependencies(f) -> Tuple
+
+Extra values that a cached call to `f` depends on, folded into its cache key.
+Use this for a dependency the walk cannot see, such as a callable fetched out
+of a container, or a data file whose contents matter:
+
+```julia
+QuartoTools.dependencies(::typeof(load_table)) = (read("input.csv"),)
+```
+"""
+dependencies(f) = ()
+
 @inline function (cache::Cached)(args...; kws...)
-    cacheable(cache.f) || error("Cannot cache function call: $(cache.expr)")
-
-    key = _cache_key(cache, args, kws)
-    cache_file = joinpath(_cache_dir(cache), key)
-
-    if safe_isfile(cache_file)
-        @debug "Loading cached result from" cache_file
-        try
-            result_from_file = QuartoTools.deserialize(cache_file)
-            last_used = Dates.now()
-            _update_metadata!(cache_file, last_used)
-
-            return result_from_file
-        catch error
-            @warn(
-                "Failed to load cached result, re-running.",
-                error,
-                stacktrace = stacktrace(),
-                cache_file,
-                cache,
-                args,
-                kws,
-            )
-        end
-    end
-
-    result = cache.f(args...; kws...)
-    created = Dates.now()
-
-    mkpath(dirname(cache_file))
-    try
-        QuartoTools.serialize(cache_file, result)
-        _create_metadata(cache_file, cache, created, args, kws, result)
-    catch error
-        @warn(
-            "Failed to save cached result.",
-            error,
-            stacktrace = stacktrace(),
-            cache_file,
-            cache,
-            args,
-            kws,
-        )
-    end
-
-    return result
+    return run_cached(cache.site, cache.f, cache.f, args, values(kws))
 end
 
-function _create_metadata(cache_file, cache, created, args, kws, result)
-    metadata = _metadata(cache, created, args, kws, result)
-    open("$cache_file.toml", "w") do io
-        TOML.print(io, metadata; sorted = true)
-    end
-end
-
-function _update_metadata!(cache_file, last_used)
-    metadata = TOML.parsefile("$cache_file.toml")
-    metadata["last_used"] = string(last_used)
-    open("$cache_file.toml", "w") do io
-        TOML.print(io, metadata; sorted = true)
-    end
-end
-
-function _metadata(cache, created, args, kws, result)
-    args_str = string.(typeof.(collect(args)))
-    kws_str = Dict([string(k) => string(typeof(v)) for (k, v) in pairs(kws)])
-    metadata = Dict{String,Any}(
-        "created" => string(created),
-        "last_used" => string(created),
-        "function" => string(cache.f),
-        "module" => string(cache.mod),
-        "project" => cache.project,
-        "result_type" => string.(typeof(result)),
-    )
-    isempty(args_str) || (metadata["arg_types"] = args_str)
-    isempty(kws_str) || (metadata["kw_types"] = kws_str)
-    return metadata
-end
-
-function _cache_dir(c::Cached)
-    dir = safe_isfile(c.file) ? dirname(c.file) : pwd()
-    return normpath(joinpath(dir, ".cache"))
-end
-
-function _cache_key(c::Cached, args, kws)
-    payload = (;
-        version = VERSION,
-        func = c.f,
-        method = code_lowered(c.f, typeof(args)),
-        mod = c.mod,
-        file = safe_isfile(c.file) ? c.file : "",
-        project = read(c.project),
-        args = args,
-        kws = kws,
-    )
-    return bytes2hex(content_hash(payload))
-end
-
-"""
-    @cache func(args...; kws...)
-
-Cache the result of a function call with the given arguments and keyword
-arguments.
-
-The caching key is based on:
-
-  - The full `VERSION` of Julia.
-  - The `Function` being called.
-  - The `Module` in which the function is called.
-  - The file in which the function is called.
-  - The active `Project.toml`.
-  - The argument values and keyword argument values passed to the function.
-
-The cache is stored in a `.cache` directory in the same directory as the file in
-which the function is called. Deleting this directory will clear the cache.
-"""
-macro cache(expr)
-    if Meta.isexpr(expr, :call)
-        # Swap out the function call with a cached version of it that overloads
-        # calls with a check for cached results for the specific argument
-        # combination.
-        expr.args[1] = Expr(
-            :call,
-            Cached,
-            expr.args[1],
-            __module__,
-            String(__source__.file),
-            Expr(:call, Base.active_project),
-            QuoteNode(deepcopy(expr)),
-        )
-        return esc(expr)
-    else
-        # TODO: maybe expand the use of `@cache` to other expressions?
-        error("`@cache` is only valid on a function call expression.")
-    end
-end
+include("cache/macro.jl")
 
 active_repl_backend_available() =
     isdefined(Base, :active_repl_backend) && Base.active_repl_backend !== nothing
@@ -450,9 +256,9 @@ function walk(f, other; before = Returns(true), after = Returns(true))
 end
 
 function _transform_ast_cache(expr::Expr)
-    enabled, ignored = _caching_options()
+    enabled, listed = _caching_options()
     if enabled
-        ignored = Set(Symbol.(ignored))
+        ignored = Set(Symbol.(listed))
         function before(ex)
             if Meta.isexpr(ex, (:function, :call, :macrocall, :struct, :module))
                 return false
@@ -477,14 +283,18 @@ function _transform_ast_cache(expr::Expr)
                     if no_ignored_vars(vars, ignored)
                         callexpr = ex.args[2]
                         if Meta.isexpr(callexpr, :call) && isa(lnn[].file, Symbol)
+                            # Naming the call site and digesting its callee are
+                            # done here, so that a call written inside a loop
+                            # does not repeat them once an iteration.
+                            callee = callexpr.args[1]
                             newfunc = Expr(
                                 :call,
                                 Cached,
-                                callexpr.args[1],
+                                callee,
                                 Expr(:macrocall, Symbol("@__MODULE__"), lnn[]),
                                 String(lnn[].file),
-                                Expr(:call, Base.active_project),
-                                QuoteNode(deepcopy(ex)),
+                                String(something(base_name(callee), :call)),
+                                content_hex(callee),
                             )
                             return Expr(
                                 ex.head,
@@ -687,6 +497,9 @@ function __init__()
     if ccall(:jl_generating_output, Cint, ()) == 0
         _init_transform_ast_cache()
     end
+
+    disabled = get(ENV, "QUARTOTOOLS_CACHE_DISABLE", "")
+    ENABLED[] = !(lowercase(disabled) in ("1", "true", "yes"))
 
     # Since UUIDs are checked by the registry checks for package extensions we
     # cannot make these "real" extensions and have to rely on `Requires.jl`.

@@ -25,6 +25,13 @@ using Test
             @test fex.args[1] == :a
             @test fex.args[2].args[1].args[1] == QuartoTools.Cached
 
+            # What names the call site is worked out here, once, rather than on
+            # every evaluation of the rewritten call. A call inside a loop is
+            # evaluated once an iteration.
+            arguments = fex.args[2].args[1].args
+            @test arguments[5] == "f"
+            @test arguments[6] == QuartoTools.content_hex(:f)
+
             # assignments within functions are not cached:
             ex = QuartoTools._transform_ast_cache(quote
                 function foo()

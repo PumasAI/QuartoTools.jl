@@ -60,16 +60,22 @@ jobs:
           - windows-latest
           - macOS-latest
         version:
-          - "1.6"
+          - "1.10"
           - "1.11"
-        exclude:
-          - os: macos-latest # Apple Silicon
-            version: '1.6'
-          - os: windows-latest # Slow registry download.
-            version: "1.6"
+          - "1.12"
         include:
-          - os: windows-latest
+          # Every version between the floor and the ones above runs on one
+          # platform. These pin what the shims in `src/cache/compat.jl` are
+          # there for, which is a property of the version and not of the
+          # platform. Apple Silicon has no build before 1.7 either.
+          - os: ubuntu-latest
+            version: "1.6"
+          - os: ubuntu-latest
             version: "1.7"
+          - os: ubuntu-latest
+            version: "1.8"
+          - os: ubuntu-latest
+            version: "1.9"
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
