@@ -7,8 +7,7 @@ julia:
 ---
 
 ```{julia}
-import CairoMakie
-import DataFrames
+import SampleValues
 import QuartoTools
 ```
 
@@ -18,15 +17,14 @@ mktempdir() do dir
     write(
         script,
         """
-        import CairoMakie
-        import DataFrames
+        import SampleValues
         import Serialization
 
         func = x -> x
-        df = DataFrames.DataFrame(a=[1, 2, 3], b=[4, 5, 6])
-        fig = CairoMakie.scatter(df.a, func.(df.b))
+        table = SampleValues.Table([:a => [1, 2, 3], :b => [4, 5, 6]])
+        bitmap = SampleValues.Bitmap()
 
-        Serialization.serialize("from_script.jls", (func, df, fig))
+        Serialization.serialize("from_script.jls", (func, table, bitmap))
         """,
     )
     run(`$(Base.julia_cmd()) --project=environments/Serialize $script`)
@@ -34,7 +32,7 @@ end
 ```
 
 ```{julia}
-func, df, fig = QuartoTools.deserialize("from_script.jls")
+func, table, bitmap = QuartoTools.deserialize("from_script.jls")
 ```
 
 ```{julia}
@@ -42,15 +40,15 @@ func(1)
 ```
 
 ```{julia}
-df
+table
 ```
 
 ```{julia}
-fig
+bitmap
 ```
 
 ```{julia}
-QuartoTools.serialize("from_quarto.jls", (func, df, fig))
+QuartoTools.serialize("from_quarto.jls", (func, table, bitmap))
 ```
 
 ```{julia}
@@ -60,16 +58,15 @@ mktempdir() do dir
         script,
         """
         import Serialization
-        import DataFrames
-        import CairoMakie
+        import SampleValues
 
-        func, df, fig = Serialization.deserialize("from_quarto.jls")
+        func, table, bitmap = Serialization.deserialize("from_quarto.jls")
 
         is_func = isa(func, Function) && func(1) == 1
-        is_df = isa(df, DataFrames.DataFrame) && DataFrames.nrow(df) == 3
-        is_fig = isa(fig, CairoMakie.Makie.FigureAxisPlot)
+        is_table = isa(table, SampleValues.Table) && SampleValues.rows(table) == 3
+        is_bitmap = isa(bitmap, SampleValues.Bitmap)
 
-        @show is_func is_df is_fig
+        @show is_func is_table is_bitmap
         """,
     )
     run(`$(Base.julia_cmd()) --project=environments/Serialize $script`)

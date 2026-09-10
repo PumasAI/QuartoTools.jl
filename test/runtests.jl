@@ -11,16 +11,19 @@ function develop(path)
 end
 develop(joinpath(@__DIR__, "..", "..", "QuartoNotebookRunner"))
 
-function instantiate(project)
+function instantiate(project, paths...)
     if isdir(project)
         script = joinpath(@__DIR__, "instantiate.jl")
-        run(`$(Base.julia_cmd()) --project=$(project) $(script)`)
+        run(`$(Base.julia_cmd()) --project=$(project) $(script) $(collect(paths))`)
     else
         error("Project directory not found: $project")
     end
 end
 instantiate(joinpath(@__DIR__, "notebooks", "environments", "QuartoToolsEnv"))
-instantiate(joinpath(@__DIR__, "notebooks", "environments", "Serialize"))
+instantiate(
+    joinpath(@__DIR__, "notebooks", "environments", "Serialize"),
+    joinpath(@__DIR__, "packages", "SampleValues"),
+)
 
 import QuartoTools
 import QuartoNotebookRunner
