@@ -27,7 +27,12 @@ struct CallSite
         file::AbstractString,
         digest::AbstractString,
     )
-        push!(SITE_FILES, String(file))
+        # The cell transform builds a site as the cell runs, so two cells on
+        # different tasks can reach this at once and a set cannot be grown from
+        # two tasks. A file already recorded needs no growing, which is what
+        # every build after the first finds.
+        path = String(file)
+        path in SITE_FILES || lock(() -> push!(SITE_FILES, path), ANALYSIS_LOCK)
         return new(name, mod, file, digest)
     end
 end
