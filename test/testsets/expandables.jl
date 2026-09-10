@@ -10,8 +10,11 @@
     @test cells[5].source[1] == "#| some_option: true\n"
     @test cells[5].outputs[1].data["text/plain"] == "123"
 
+    # The runner writes the options header by iterating the cell's option
+    # `Dict`, so the lines come out in an order that varies with the Julia
+    # version. Compare them sorted.
     test_asis_no_echo(cell) =
-        @test cell.source == ["#| output: \"asis\"\n", "#| echo: false\n"]
+        @test sort(cell.source) == sort(["#| output: \"asis\"\n", "#| echo: false\n"])
     test_no_echo(cell) = @test cell.source == ["#| echo: false\n"]
     markdown(cell) = cell.outputs[1].data["text/markdown"]
     plaintext(cell) = cell.outputs[1].data["text/plain"]

@@ -1,0 +1,6 @@
+name = "SampleValues"
+uuid = "b0cbb836-6434-459a-b928-981b29e1aef9"
+version = "0.1.0"
+
+[compat]
+julia = "1.6"

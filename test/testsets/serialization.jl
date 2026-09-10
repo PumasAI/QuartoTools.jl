@@ -9,13 +9,13 @@
     @test cell.outputs[1].data["text/plain"] == "1"
 
     cell = json.cells[10]
-    @test contains(cell.outputs[1].data["text/plain"], "DataFrame")
+    @test contains(cell.outputs[1].data["text/plain"], "Table")
 
     cell = json.cells[12]
     @test !isempty(cell.outputs[1].data["image/png"])
 
     text = json.cells[16].outputs[1].text
     @test contains(text, "is_func = true")
-    @test contains(text, "is_df = true")
-    @test contains(text, "is_fig = true")
+    @test contains(text, "is_table = true")
+    @test contains(text, "is_bitmap = true")
 end
