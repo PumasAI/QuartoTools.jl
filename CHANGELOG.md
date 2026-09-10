@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- Julia 1.13 to the CI matrix
+
+### Fixed
+
+- The `SHA` compat entry covers the stdlib's 1.0 release, which Julia 1.13
+  ships. Pkg previously ignored the entry and warned on every operation
+- Merging a notebook's caching options with a cell's no longer prints a
+  deprecation warning on Julia 1.13
+
 ## [v1.2.0] - 2026-09-10
 
 ### Added

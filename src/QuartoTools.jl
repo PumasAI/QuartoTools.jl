@@ -360,7 +360,7 @@ function _caching_options(::Any)
 end
 _caching_options() = _caching_options(nothing)
 
-_recursive_merge(x::AbstractDict...) = merge(_recursive_merge, x...)
+_recursive_merge(x::AbstractDict...) = mergewith(_recursive_merge, x...)
 _recursive_merge(x...) = x[end]
 
 function __caching_options(notebook_options, cell_options)

@@ -63,6 +63,7 @@ jobs:
           - "1.10"
           - "1.11"
           - "1.12"
+          - "1.13"
         include:
           # Every version between the floor and the ones above runs on one
           # platform. These pin what the shims in `src/cache/compat.jl` are
